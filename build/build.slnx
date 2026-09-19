@@ -1,3 +1,5 @@
 <Solution>
   <Project Path="GUI.csproj" Id="2d8093a6-6428-402c-881b-c376232a8cd9" />
+  <Project Path="Core.csproj" Id="e0d2cb0d-d6af-416d-bc24-9ecc43acc070" />
+  <Project Path="Win32.csproj" Id="a3636484-a2d8-4c7d-a11a-e9b1f615326a" />
 </Solution>

@@ -1,0 +1,477 @@
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
+using System.Text;
+using System.Text.Json;
+using PotatoAgent.Core.Brain;
+using PotatoAgent.Core.Tools;
+
+namespace PotatoAgent.Core.Agent;
+
+/// <summary>带图工具结果回灌给模型的方式。</summary>
+public enum AgentImageDelivery
+{
+    /// <summary>
+    /// 默认：工具消息之后追加一条带图的 <c>user</c> 消息。
+    /// 兼容性最好 —— 官方 OpenAI 协议只允许 <c>user</c> 消息的 <c>content</c> 放 <c>image_url</c>，
+    /// tool 消息塞数组会被一部分服务端直接 400。
+    /// </summary>
+    FollowUpUserMessage = 0,
+
+    /// <summary>把图直接放进 <c>tool</c> 消息的 <c>content</c> 数组。更紧凑，但只对认这套的服务端有效。</summary>
+    ToolMessage = 1,
+}
+
+/// <summary>
+/// 一个可以对话、可以调工具的会话 —— 界面主要绑的就是这个对象。
+/// </summary>
+/// <remarks>
+/// <para>
+/// 它把 <see cref="OpenAiProvider"/>（说话）和 <see cref="ToolRegistry"/>（干活）串成一个闭环：
+/// </para>
+/// <code>
+/// 用户: "帮我看看屏幕上是什么"
+///   → 模型要 pc_screenshot
+///   → 权限门（Safe，直接过）
+///   → 截图执行，拿到真实图片
+///   → 结果 + 图片（image_url data URI）回灌
+///   → 模型看着图回答
+/// </code>
+/// <para><b>权限门</b>：<see cref="ToolRisk.Confirm"/> / <see cref="ToolRisk.Dangerous"/> 的工具一律先 await
+/// <see cref="Approver"/>；<b>没挂 approver 就一律拒绝</b>，不存在"忘了挂于是乱点用户电脑"的路径。</para>
+/// <para><b>线程模型</b>：不是线程安全的，同一时刻只跑一轮。事件是在<b>调用方的线程</b>上吐出来的
+/// （<c>await foreach</c> 的续体），WPF 里记得回到 UI 线程再刷控件。</para>
+/// <para><b>异常</b>：模型/网络出错不会抛，而是吐一条 <see cref="AgentError"/> 然后收尾；
+/// 只有用户取消（<see cref="OperationCanceledException"/>）会原样上抛 —— 取消时会把剩下来的
+/// tool 消息补齐，保证历史自洽，不会留下"assistant 要调工具却没有结果"的破历史。</para>
+/// </remarks>
+public sealed class AgentSession
+{
+    private readonly List<ChatMessage> _history = new();
+    private readonly HashSet<string> _alwaysAllowed = new(StringComparer.Ordinal);
+
+    /// <summary>建一个会话。</summary>
+    /// <param name="provider">大脑（OpenAI 兼容流式客户端）。</param>
+    /// <param name="tools">工具表。</param>
+    /// <param name="approver">权限门；<b>null 表示危险工具一律拒绝</b>。</param>
+    /// <param name="systemMessages">预置的 system 消息（人设 / 工具说明 / 记忆）。</param>
+    public AgentSession(
+        OpenAiProvider provider,
+        ToolRegistry tools,
+        IToolApprover? approver = null,
+        IEnumerable<ChatMessage>? systemMessages = null)
+    {
+        Provider = provider ?? throw new ArgumentNullException(nameof(provider));
+        Tools = tools ?? throw new ArgumentNullException(nameof(tools));
+        Approver = approver;
+
+        if (systemMessages is not null)
+        {
+            foreach (var message in systemMessages)
+            {
+                if (message is not null)
+                {
+                    _history.Add(message);
+                }
+            }
+        }
+    }
+
+    /// <summary>大脑。换模型就换它（<see cref="OpenAiProvider"/> 持有 HttpClient，别每轮 new 一个）。</summary>
+    public OpenAiProvider Provider { get; }
+
+    /// <summary>工具表。界面上的"工具"页签直接绑 <see cref="ToolRegistry.Tools"/>。</summary>
+    public ToolRegistry Tools { get; }
+
+    /// <summary>
+    /// 权限门。可以在运行中替换（例如用户中途把"每次都问"改成"自动批准"）。
+    /// 设成 null = 危险工具重新变回一律拒绝。
+    /// </summary>
+    public IToolApprover? Approver { get; set; }
+
+    /// <summary>单轮最多跑几轮工具调用；到顶就停下并如实标记 <see cref="AgentTurnResult.StoppedAtRoundLimit"/>。</summary>
+    public int MaxToolRounds { get; set; } = 8;
+
+    /// <summary>带图工具结果的回灌方式，默认见 <see cref="AgentImageDelivery.FollowUpUserMessage"/>。</summary>
+    public AgentImageDelivery ImageDelivery { get; set; } = AgentImageDelivery.FollowUpUserMessage;
+
+    /// <summary>完整上下文（system / 历史 / 工具结果，含图片），发给服务端的就是它。</summary>
+    public IReadOnlyList<ChatMessage> History => _history;
+
+    /// <summary>
+    /// 本次会话里用户说过"允许"的那些工具（<see cref="ToolApprovalDecision.AllowAlways"/> 攒下来的）。
+    /// 界面可以显示成"已授权：pc_click, pc_type"。
+    /// </summary>
+    public IReadOnlyCollection<string> AlwaysAllowedTools => _alwaysAllowed;
+
+    /// <summary>把"已授权"清空 —— 下一轮危险工具会重新弹确认框。</summary>
+    public void ClearRememberedApprovals() => _alwaysAllowed.Clear();
+
+    /// <summary>追加一条 system 消息（改人设 / 换记忆时用）。</summary>
+    public void AddSystemMessage(string content) => _history.Add(ChatMessage.System(content));
+
+    /// <summary>清空上下文，从零开始（"新对话"按钮）。</summary>
+    public void Reset()
+    {
+        _history.Clear();
+        _alwaysAllowed.Clear();
+    }
+
+    /// <summary>
+    /// 发一条用户消息，跑完整个"说话 → 调工具 → 回灌 → 再说"的循环，过程中把事件流式吐出来。
+    /// </summary>
+    /// <param name="userText">用户输入。</param>
+    /// <param name="ct">取消令牌：按了"停止"就传进来，工具不会被执行到一半还继续。</param>
+    public async IAsyncEnumerable<AgentEvent> SendAsync(
+        string userText,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var userMessage = ChatMessage.User(userText ?? string.Empty);
+        _history.Add(userMessage);
+
+        var newMessages = new List<ChatMessage> { userMessage };
+        var finalText = string.Empty;
+        var executed = 0;
+        var denied = 0;
+        var stoppedAtRoundLimit = false;
+        string? finishReason = null;
+        AgentError? failure = null;
+
+        for (var round = 0; round < MaxToolRounds; round++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var accumulator = new ToolCallAccumulator();
+            var text = new StringBuilder();
+            var buffered = new List<AgentEvent>();
+            string? roundFinishReason = null;
+            AgentError? streamError = null;
+
+            // yield return 不能出现在带 catch 的 try 里（C# 语法限制），
+            // 所以这里只把事件攒进 buffered，出了 try 再吐。
+            try
+            {
+                await foreach (var evt in Provider.StreamCompletionAsync(_history, Tools.Tools, ct).ConfigureAwait(false))
+                {
+                    switch (evt)
+                    {
+                        case ChatTextDelta delta:
+                            text.Append(delta.Text);
+                            buffered.Add(new AgentTextDelta(delta.Text));
+                            break;
+
+                        case ChatToolCallDelta toolDelta:
+                            accumulator.Apply(toolDelta);
+                            break;
+
+                        case ChatFinished finished:
+                            roundFinishReason = finished.FinishReason;
+                            break;
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                streamError = new AgentError(Describe(ex), ex);
+            }
+
+            foreach (var bufferedEvent in buffered)
+            {
+                yield return bufferedEvent;
+            }
+
+            if (streamError is not null)
+            {
+                failure = streamError;
+                break;
+            }
+
+            if (roundFinishReason is not null)
+            {
+                finishReason = roundFinishReason;
+            }
+
+            var calls = accumulator.Build();
+            var assistant = ChatMessage.Assistant(text.Length > 0 ? text.ToString() : null, calls.Count > 0 ? calls : null);
+            _history.Add(assistant);
+            newMessages.Add(assistant);
+
+            if (calls.Count == 0)
+            {
+                finalText = text.ToString();
+                break;
+            }
+
+            OperationCanceledException? cancellation = null;
+
+            foreach (var call in calls)
+            {
+                var name = call.Function.Name ?? string.Empty;
+                var argumentsJson = call.Function.Arguments ?? string.Empty;
+                Tools.TryGet(name, out var tool);
+                var risk = tool?.Risk ?? ToolRisk.Safe;
+                var needsApproval = tool is not null && tool.Risk != ToolRisk.Safe && !_alwaysAllowed.Contains(name);
+
+                if (ct.IsCancellationRequested && cancellation is null)
+                {
+                    cancellation = new OperationCanceledException(ct);
+                }
+
+                if (cancellation is not null)
+                {
+                    // 已经取消了：这次和后面每次调用都补一条 tool 消息再走，免得历史破在半路。
+                    AppendToolMessage(call.Id, name, ToolResult.Error("Cancelled by the user before this tool ran."), newMessages);
+                    continue;
+                }
+
+                yield return new AgentToolStarting(call.Id, name, argumentsJson, risk, needsApproval);
+
+                ToolResult result;
+                var elapsed = TimeSpan.Zero;
+                AgentToolDenied? denial = null;
+
+                if (!TryParseArguments(argumentsJson, out var args, out var parseError))
+                {
+                    result = ToolResult.Error(parseError!);
+                }
+                else
+                {
+                    var (allowed, denyReason) = await DecideAsync(tool, name, args, argumentsJson, ct).ConfigureAwait(false);
+
+                    if (!allowed)
+                    {
+                        denied++;
+                        result = ToolResult.Error(denyReason!);
+                        denial = new AgentToolDenied(call.Id, name, denyReason!);
+                    }
+                    else
+                    {
+                        var stopwatch = Stopwatch.StartNew();
+                        try
+                        {
+                            result = await Tools.InvokeAsync(name, args, ct).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                        {
+                            cancellation = new OperationCanceledException(ct);
+                            AppendToolMessage(call.Id, name, ToolResult.Error("Cancelled by the user while this tool was running."), newMessages);
+                            continue;
+                        }
+                        finally
+                        {
+                            stopwatch.Stop();
+                            elapsed = stopwatch.Elapsed;
+                        }
+
+                        executed++;
+                    }
+                }
+
+                if (denial is not null)
+                {
+                    yield return denial;
+                }
+                else
+                {
+                    yield return new AgentToolFinished(call.Id, name, result.Success, Summarize(result), elapsed, result.Images.Count);
+                }
+
+                AppendToolMessage(call.Id, name, result, newMessages);
+            }
+
+            if (cancellation is not null)
+            {
+                throw cancellation;
+            }
+
+            if (round == MaxToolRounds - 1)
+            {
+                stoppedAtRoundLimit = true;
+                finalText = text.ToString();
+            }
+        }
+
+        if (failure is not null)
+        {
+            yield return failure;
+        }
+
+        yield return new AgentTurnCompleted(
+            new AgentTurnResult(finalText, executed, denied, finishReason, stoppedAtRoundLimit, newMessages));
+    }
+
+    /// <summary>不关心过程时的简版：跑完一整轮，只拿最终文本和统计。</summary>
+    public async Task<AgentTurnResult> SendAndCollectAsync(string userText, CancellationToken ct = default)
+    {
+        var text = new StringBuilder();
+        AgentTurnResult? result = null;
+
+        await foreach (var evt in SendAsync(userText, ct).ConfigureAwait(false))
+        {
+            switch (evt)
+            {
+                case AgentTextDelta delta:
+                    text.Append(delta.Text);
+                    break;
+
+                case AgentTurnCompleted completed:
+                    result = completed.Result;
+                    break;
+            }
+        }
+
+        return result ?? new AgentTurnResult(text.ToString(), 0, 0, null, false, Array.Empty<ChatMessage>());
+    }
+
+    // ==================== 内部 ====================
+
+    /// <summary>权限门：决定这一次调用放不放行。任何"说不清"的情况都按拒绝处理。</summary>
+    private async Task<(bool Allowed, string? DenyReason)> DecideAsync(
+        ITool? tool,
+        string name,
+        JsonElement args,
+        string argumentsJson,
+        CancellationToken ct)
+    {
+        // 不存在的工具交给 ToolRegistry 报"未知工具"，这里不拦（拦了反而让模型不知道名字写错了）。
+        if (tool is null || tool.Risk == ToolRisk.Safe || _alwaysAllowed.Contains(name))
+        {
+            return (true, null);
+        }
+
+        var approver = Approver;
+        if (approver is null)
+        {
+            return (false, $"Refused: '{name}' has risk {tool.Risk} and no approver is configured, so it was not executed.");
+        }
+
+        ToolApprovalDecision decision;
+        try
+        {
+            decision = await approver
+                .ApproveAsync(new ToolApprovalRequest(name, tool.Description ?? string.Empty, tool.Risk, args, argumentsJson), ct)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // 确认框自己崩了：按拒绝处理。fail-closed。
+            return (false, $"Refused: the approval prompt for '{name}' failed ({Describe(ex)}), so it was not executed.");
+        }
+
+        return decision switch
+        {
+            ToolApprovalDecision.AllowAlways => Remember(name),
+            ToolApprovalDecision.AllowOnce => (true, null),
+            _ => (false, $"Refused: the user denied the call to '{name}'."),
+        };
+    }
+
+    private (bool Allowed, string? DenyReason) Remember(string name)
+    {
+        _alwaysAllowed.Add(name);
+        return (true, null);
+    }
+
+    /// <summary>把工具结果写进历史（必要时另起一条带图的 user 消息）。</summary>
+    private void AppendToolMessage(string callId, string name, ToolResult result, List<ChatMessage> newMessages)
+    {
+        var modelText = result.ToModelText();
+
+        if (!result.HasImages || ImageDelivery == AgentImageDelivery.FollowUpUserMessage)
+        {
+            var plain = ChatMessage.Tool(callId, modelText, name);
+            _history.Add(plain);
+            newMessages.Add(plain);
+
+            if (result.HasImages)
+            {
+                // 图不放在 tool 消息里：官方协议只给 user 消息开了 image_url。
+                var followUp = ChatMessage.UserWithParts(
+                    BuildImageParts($"{name} returned {result.Images.Count} image(s) (tool_call_id={callId}). Look at them.", result.Images));
+                _history.Add(followUp);
+                newMessages.Add(followUp);
+            }
+
+            return;
+        }
+
+        var withParts = ChatMessage.ToolWithParts(callId, BuildImageParts(modelText, result.Images), name);
+        _history.Add(withParts);
+        newMessages.Add(withParts);
+    }
+
+    /// <summary>文本 + 图片拼成 <c>content</c> 数组。</summary>
+    private static List<ChatContentPart> BuildImageParts(string text, IReadOnlyList<ToolImage> images)
+    {
+        var parts = new List<ChatContentPart>(images.Count * 2 + 1)
+        {
+            ChatContentPart.FromText(text),
+        };
+
+        foreach (var image in images)
+        {
+            var label = string.IsNullOrWhiteSpace(image.Caption)
+                ? $"image ({image.MimeType}, {image.ApproximateByteCount} bytes)"
+                : $"{image.Caption} ({image.MimeType}, {image.ApproximateByteCount} bytes)";
+
+            parts.Add(ChatContentPart.FromText(label));
+            parts.Add(ChatContentPart.FromImageDataUri(image.DataUri));
+        }
+
+        return parts;
+    }
+
+    /// <summary>一行结果摘要，给界面做过程提示用。</summary>
+    private static string Summarize(ToolResult result)
+    {
+        var text = result.Content.Replace("\r\n", " ").Replace('\n', ' ').Trim();
+        if (text.Length == 0)
+        {
+            text = result.Success ? "(no output)" : "(failed with no message)";
+        }
+
+        if (text.Length > 200)
+        {
+            text = text[..200] + "…";
+        }
+
+        return result.Success ? text : "ERROR: " + text;
+    }
+
+    private static bool TryParseArguments(string? json, out JsonElement args, out string? error)
+    {
+        args = default;
+        error = null;
+
+        var text = string.IsNullOrWhiteSpace(json) ? "{}" : json!;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(text);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                error = $"Tool arguments must be a JSON object, but got {doc.RootElement.ValueKind}: {Truncate(text)}";
+                return false;
+            }
+
+            args = doc.RootElement.Clone();
+            return true;
+        }
+        catch (JsonException ex)
+        {
+            error = $"Tool arguments are not valid JSON ({ex.Message}): {Truncate(text)}";
+            return false;
+        }
+    }
+
+    private static string Truncate(string text) => text.Length <= 200 ? text : text[..200] + "…";
+
+    private static string Describe(Exception ex) => $"{ex.GetType().Name}: {ex.Message}";
+}

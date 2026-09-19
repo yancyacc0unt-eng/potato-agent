@@ -1,0 +1,49 @@
+<Project>
+
+  <!--
+    Win32 层的实机自测。规矩照抄 Win32.csproj：
+    csproj 住 build/、源码住 src/Win32SelfTest/、显式 Include、单独开 obj/bin 子目录
+    （同一个目录下的多个项目会互相覆盖 project.assets.json）。
+
+    它【不在】build.slnx 里，build.bat 也不会碰它 —— 只有想复跑实测时才手动：
+      dotnet build build\Win32SelfTest.csproj -c Debug
+      build\bin\Win32SelfTest\Debug\net10.0-windows\Win32SelfTest.exe
+    ⚠ 它会真的操作这台电脑的键盘鼠标（只对它自己启动的记事本，且全程过焦点门禁）。
+  -->
+
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>obj\Win32SelfTest\</BaseIntermediateOutputPath>
+    <BaseOutputPath>bin\Win32SelfTest\</BaseOutputPath>
+  </PropertyGroup>
+
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <AssemblyName>Win32SelfTest</AssemblyName>
+    <RootNamespace>PotatoAgent.Win32.SelfTest</RootNamespace>
+
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <SynthesizeLinkMetadata>true</SynthesizeLinkMetadata>
+    <DefaultItemExcludes>$(DefaultItemExcludes);.vs\**</DefaultItemExcludes>
+
+    <!-- 自测自己要独立用一套 UIA 回读（不借被测代码的手），所以同样要 WPF/WinForms 框架引用 -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\src\Win32SelfTest\**\*.cs" Exclude="..\src\Win32SelfTest\obj\**;..\src\Win32SelfTest\bin\**" LinkBase="src\Win32SelfTest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="Win32.csproj" />
+  </ItemGroup>
+
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+
+</Project>

@@ -5,6 +5,7 @@ docs/TASKS.md
 # 构建生成物
 bin/
 obj/
+dist/
 
 # Visual Studio 本机缓存与个人设置
 .vs/

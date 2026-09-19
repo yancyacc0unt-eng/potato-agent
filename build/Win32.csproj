@@ -1,0 +1,69 @@
+<Project>
+
+  <!--
+    和 GUI.csproj 同一套规矩：项目文件住在 build/，源码在 ../src/Win32/。
+    目标框架跟 GUI 一致用 net10.0-windows（P/Invoke 只认 Windows），
+    但这里不引 WPF / WinForms，保持成纯 classlib。
+
+    ⚠ 与 GUI.csproj 唯一的差别：三个 csproj 都住在 build/ 下，
+    而 obj/project.assets.json 是按"目录"命名的（不带项目名），
+    同一个目录里的多个项目会互相覆盖还原结果（NETSDK1005）。
+    所以这里给 Win32 单独开 obj\Win32\ 和 bin\Win32\ 子目录，
+    clean.bat 删的还是 build\bin、build\obj 两个父目录，不受影响。
+
+    ⚠ 这段必须在 Sdk.props 之前求值，导入 SDK 之后再改会是 MSB3539
+    （MSBuild 已经用旧值算好了 MSBuildProjectExtensionsPath）。
+    因此这里用显式 Sdk.props / Sdk.targets 导入的写法，而不是 <Project Sdk="...">。
+  -->
+
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>obj\Win32\</BaseIntermediateOutputPath>
+    <BaseOutputPath>bin\Win32\</BaseOutputPath>
+  </PropertyGroup>
+
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <AssemblyName>PotatoAgent.Win32</AssemblyName>
+    <RootNamespace>PotatoAgent.Win32</RootNamespace>
+
+    <!--
+      这一层要三样东西，缺一不可：
+        UseWindowsForms -> System.Drawing.Bitmap（截图）+ System.Windows.Forms.Screen（多显示器）
+        UseWPF         -> System.Windows.Automation（UIAutomationClient / UIAutomationTypes），
+                          TypeText 的 ValuePattern.SetValue 走的正是这套托管 UIA。
+      两个同时开 = 引用完整的 Microsoft.WindowsDesktop.App 共享框架（WPF/WinForms 两个 profile 的并集），
+      因此不需要任何 NuGet 包，仍然可离线构建。
+    -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>true</UseWPF>
+
+    <!-- 源码不在项目目录下，关掉默认 glob，全部显式包含，避免漏收 / 重复包含 -->
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <!-- EnableDefaultItems=false 时 SDK 不再自动推导 Link，显式打开让 LinkBase 生效 -->
+    <SynthesizeLinkMetadata>true</SynthesizeLinkMetadata>
+    <!-- 别把 build/.vs 之类的本地缓存拉进项目 -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);.vs\**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 源码：排除 obj/bin 生成物，别把它们当源码收进来 -->
+    <Compile Include="..\src\Win32\**\*.cs" Exclude="..\src\Win32\obj\**;..\src\Win32\bin\**" LinkBase="src\Win32" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      src/Win32/Tools/ 里的 pc_* 工具要实现 Core 的 ITool，所以需要这条引用。
+      依赖方向只有一条：功能项目 → Core，Win32 → Core 正是允许的那个方向。
+      Core 是 net10.0，Win32 是 net10.0-windows，向上兼容。
+    -->
+    <ProjectReference Include="Core.csproj" />
+  </ItemGroup>
+
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+
+</Project>

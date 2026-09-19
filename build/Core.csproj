@@ -1,0 +1,59 @@
+<Project>
+
+  <!--
+    和 GUI.csproj 同一套规矩：项目文件住在 build/，源码在 ../src/Core/。
+    csproj 所在目录就是项目根，默认 glob 在 build/ 下找不到任何 .cs，
+    所以关掉默认项、显式包含 ../src/Core 下的源码，
+    并用 LinkBase 让它们在 VS 解决方案资源管理器里显示成 src/Core 下的正常结构。
+
+    ⚠ 与 GUI.csproj 唯一的差别：三个 csproj 都住在 build/ 下，
+    而 obj/project.assets.json 是按"目录"命名的（不带项目名），
+    同一个目录里的多个项目会互相覆盖还原结果（NETSDK1005）。
+    所以这里给 Core 单独开 obj\Core\ 和 bin\Core\ 子目录，
+    clean.bat 删的还是 build\bin、build\obj 两个父目录，不受影响。
+
+    ⚠ 这段必须在 Sdk.props 之前求值，导入 SDK 之后再改会是 MSB3539
+    （MSBuild 已经用旧值算好了 MSBuildProjectExtensionsPath）。
+    因此这里用显式 Sdk.props / Sdk.targets 导入的写法，而不是 <Project Sdk="...">。
+  -->
+
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>obj\Core\</BaseIntermediateOutputPath>
+    <BaseOutputPath>bin\Core\</BaseOutputPath>
+  </PropertyGroup>
+
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <AssemblyName>PotatoAgent.Core</AssemblyName>
+    <RootNamespace>PotatoAgent.Core</RootNamespace>
+
+    <!-- 源码不在项目目录下，关掉默认 glob，全部显式包含，避免漏收 / 重复包含 -->
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <!-- EnableDefaultItems=false 时 SDK 不再自动推导 Link，显式打开让 LinkBase 生效 -->
+    <SynthesizeLinkMetadata>true</SynthesizeLinkMetadata>
+    <!-- 别把 build/.vs 之类的本地缓存拉进项目 -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);.vs\**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 源码：排除 obj/bin 生成物，别把它们当源码收进来 -->
+    <Compile Include="..\src\Core\**\*.cs" Exclude="..\src\Core\obj\**;..\src\Core\bin\**" LinkBase="src\Core" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      DPAPI 的托管封装（System.Security.Cryptography.ProtectedData）不在 net10.0 基础框架里，
+      需要这个微软官方包。只用来加密用户自填的 apiKey，不是第三方 LLM SDK，符合"只依赖 HttpClient"的约束。
+      （net10.0-windows 也一样要引，除非改成 P/Invoke crypt32.dll。）
+    -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.12" />
+  </ItemGroup>
+
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+
+</Project>

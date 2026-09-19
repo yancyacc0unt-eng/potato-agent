@@ -1,0 +1,57 @@
+<Project>
+
+  <!--
+    大脑（Core）层的自测。规矩照抄 Win32SelfTest.csproj：
+    csproj 住 build/、源码住 src/CoreSelfTest/、显式 Include、单独开 obj/bin 子目录
+    （同一个目录下的多个项目会互相覆盖 project.assets.json）。
+
+    它【不在】build.slnx 里，build.bat 也不会碰它，只有想复跑自测时才手动：
+      dotnet build build\CoreSelfTest.csproj -c Debug
+      dotnet run   [project 开关] build\CoreSelfTest.csproj -c Debug
+    退出码 0 = 全部通过，1 = 有失败（见 Program.cs）。
+
+    ⚠ 它【不发任何真实网络请求】：HTTP 全部打给本进程自己起的 HttpListener（127.0.0.1 + 系统分配的端口），
+      配置全部写在临时目录里，绝不读也不写 %APPDATA%\PotatoAgent。
+
+    目标框架用 net10.0-windows：被测代码里有 ConfigStore / DpapiSecretProtector 这些标了
+    [SupportedOSPlatform("windows")] 的类，而自测本身要真的调它们（配置读写、真实 DPAPI 各验一遍）。
+    用 net10.0 的话 CA1416 会刷 66 条警告，全是噪音。
+  -->
+
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>obj\CoreSelfTest\</BaseIntermediateOutputPath>
+    <BaseOutputPath>bin\CoreSelfTest\</BaseOutputPath>
+  </PropertyGroup>
+
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <AssemblyName>CoreSelfTest</AssemblyName>
+    <RootNamespace>PotatoAgent.Core.SelfTest</RootNamespace>
+
+    <!-- 源码不在项目目录下，关掉默认 glob，全部显式包含，避免漏收 / 重复包含 -->
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <!-- EnableDefaultItems=false 时 SDK 不再自动推导 Link，显式打开让 LinkBase 生效 -->
+    <SynthesizeLinkMetadata>true</SynthesizeLinkMetadata>
+    <!-- 别把 build/.vs 之类的本地缓存拉进项目 -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);.vs\**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 源码：排除 obj/bin 生成物，别把它们当源码收进来 -->
+    <Compile Include="..\src\CoreSelfTest\**\*.cs" Exclude="..\src\CoreSelfTest\obj\**;..\src\CoreSelfTest\bin\**" LinkBase="src\CoreSelfTest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 被测对象就是 Core 本身（DPAPI 包由 Core.csproj 传递过来，这里不用重复引） -->
+    <ProjectReference Include="Core.csproj" />
+  </ItemGroup>
+
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+
+</Project>
