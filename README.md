@@ -8,7 +8,7 @@
       \    -' /
        `-.__.-'
 
-      P O T A T O
+    P O T A T O
 ```
 
 # potatoAgent
