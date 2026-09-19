@@ -1,9 +1,18 @@
 <Application x:Class="GUI.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:local="clr-namespace:GUI"
-             StartupUri="MainWindow.xaml">
+             xmlns:local="clr-namespace:GUI">
+    <!--
+        没有 StartupUri：主窗口由 App.xaml.cs 的 OnStartup 显式建（那里是唯一的装配点，
+        ViewModel / ConfigStore / ToolRegistry 都在同一段里接起来）。
+    -->
     <Application.Resources>
+
+        <!--
+            深色主题调色板 + 通用控件样式。当前临时脚手架界面并没有引用它们
+            （MainWindow.xaml 顶部的两条空 Style 会把页签样式清回默认外观）；
+            正式界面由 yancy 亲自设计，这套留着备用，可以随手改或整个删掉。
+        -->
 
         <!--
             深色主题：整个应用共用一套调色板 + 控件样式。

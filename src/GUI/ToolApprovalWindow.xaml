@@ -1,0 +1,60 @@
+<Window x:Class="GUI.ToolApprovalWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:GUI"
+        mc:Ignorable="d"
+        Title="Allow this tool call?"
+        Height="440" Width="640"
+        MinHeight="300" MinWidth="460"
+        ShowInTaskbar="False"
+        WindowStartupLocation="CenterOwner">
+
+    <!--
+        ============================================================================
+        危险工具的权限确认框（临时脚手架，可以整个删掉重画）
+        ============================================================================
+        DataContext 是一个 ToolApprovalWindow.ApprovalView（只读的数据壳，没有逻辑）。
+        重画时保留三个按钮的 Click 挂钩即可，或者把它们换成你自己命令。
+    -->
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="{Binding Title}" FontSize="14" TextWrapping="Wrap"
+                   AutomationProperties.AutomationId="ApprovalTitleText" />
+
+        <TextBlock Grid.Row="1" Margin="0,6,0,0" TextWrapping="Wrap"
+                   Text="{Binding RiskLine}"
+                   AutomationProperties.AutomationId="ApprovalRiskText" />
+
+        <TextBlock Grid.Row="2" Margin="0,6,0,0" TextWrapping="Wrap"
+                   Text="{Binding Description}"
+                   AutomationProperties.AutomationId="ApprovalDescriptionText" />
+
+        <TextBox Grid.Row="3" Margin="0,8,0,0"
+                 Text="{Binding ArgumentsJson, Mode=OneWay}"
+                 IsReadOnly="True"
+                 AcceptsReturn="True"
+                 TextWrapping="Wrap"
+                 VerticalScrollBarVisibility="Auto"
+                 FontFamily="Consolas"
+                 AutomationProperties.AutomationId="ApprovalArgsBox"
+                 AutomationProperties.Name="Tool arguments" />
+
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Allow once" Click="AllowOnce_Click" Padding="16,4"
+                    AutomationProperties.AutomationId="AllowOnceButton" />
+            <Button Content="Always allow" Click="AllowAlways_Click" Padding="16,4" Margin="8,0,0,0"
+                    AutomationProperties.AutomationId="AllowAlwaysButton" />
+            <Button Content="Deny" IsCancel="True" Padding="16,4" Margin="8,0,0,0"
+                    AutomationProperties.AutomationId="DenyButton" />
+        </StackPanel>
+    </Grid>
+</Window>

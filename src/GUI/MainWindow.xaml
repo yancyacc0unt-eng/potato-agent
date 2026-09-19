@@ -7,79 +7,129 @@
         mc:Ignorable="d"
         Title="potatoAgent"
         Height="640" Width="1000"
-        MinHeight="480" MinWidth="760"
-        WindowStartupLocation="CenterScreen"
-        Background="{StaticResource WindowBackgroundBrush}"
-        Foreground="{StaticResource ForegroundBrush}"
-        FontFamily="Segoe UI" FontSize="13"
-        UseLayoutRounding="True"
-        TextOptions.TextFormattingMode="Display">
-    <Grid Margin="16,12,16,16">
+        MinHeight="420" MinWidth="760"
+        WindowStartupLocation="CenterScreen">
+
+    <!--
+        ============================================================================
+        临时脚手架界面（throwaway scaffolding）
+        ============================================================================
+        这里刻意只用最朴素的控件，不做配色 / 动画 / 自定义模板 —— 视觉设计由 yancy 亲自重画。
+        本文件里的所有内容都可以整个删掉：业务逻辑一行都不在这里，全在
+        GUI.ViewModels.ChatViewModel（DataContext 就是它）里。
+
+        唯一的"挂钩"：齿轮按钮上的 Click="SettingsButton_Click"。
+        重画时要么保留这个 Click 和 MainWindow.xaml.cs 里的同名方法，
+        要么把它换成你自己的一条命令。
+
+        下面这两行只是把 App.xaml 里的深色页签样式在本页清掉，
+        让脚手架回到 WPF 默认外观；重画时删掉即可。
+    -->
+    <Window.Resources>
+        <Style TargetType="TabControl" />
+        <Style TargetType="TabItem" />
+    </Window.Resources>
+
+    <Grid Margin="10">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <!-- ==================== 顶栏：左边产品名，右上角齿轮按钮 ==================== -->
-        <Grid Grid.Row="0" Margin="4,0,0,10">
-            <TextBlock Text="potatoAgent"
-                       Style="{StaticResource ProductTitleText}"
-                       HorizontalAlignment="Left" />
-            <!-- &#x2699; = gear，写成字符引用，XAML 文件保持纯 ASCII -->
-            <Button x:Name="SettingsButton"
-                    Content="&#x2699;"
-                    Style="{StaticResource GearButtonStyle}"
+        <!-- ==================== 顶栏：产品名 + 齿轮（进设置页） ==================== -->
+        <Grid Grid.Row="0" Margin="0,0,0,8">
+            <TextBlock Text="potatoAgent" FontSize="16" VerticalAlignment="Center" HorizontalAlignment="Left" />
+            <!-- &#x2699; = gear；AutomationId/Name 是给 UIA 测试和读屏软件用的，不是配色 -->
+            <Button Content="&#x2699; Settings"
                     HorizontalAlignment="Right"
-                    ToolTip="Settings" />
+                    Padding="10,3"
+                    Click="SettingsButton_Click"
+                    ToolTip="Settings"
+                    AutomationProperties.AutomationId="SettingsButton"
+                    AutomationProperties.Name="Settings" />
         </Grid>
 
         <!-- ==================== 主区域：6 个页签 ==================== -->
-        <Border Grid.Row="1"
-                Background="{StaticResource SurfaceBrush}"
-                BorderBrush="{StaticResource PanelBorderBrush}"
-                BorderThickness="1"
-                CornerRadius="6">
-            <TabControl x:Name="MainTabs"
-                        Background="Transparent"
-                        BorderThickness="0"
-                        Margin="8,8,8,0">
-                <TabControl.Resources>
-                    <!-- 内容区统一内边距 -->
-                    <Style TargetType="TextBlock" x:Key="TabBodyText" BasedOn="{StaticResource PlaceholderText}">
-                        <Setter Property="Margin" Value="16,18,16,16" />
-                    </Style>
-                </TabControl.Resources>
+        <TabControl Grid.Row="1" AutomationProperties.AutomationId="MainTabs">
+            <TabItem Header="Chat">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
 
-                <TabItem Header="Chat">
-                    <TextBlock Style="{StaticResource TabBodyText}"
-                               Text="Chat page placeholder - the conversation with the agent will live here." />
-                </TabItem>
+                    <!-- 当前生效的 provider（不含密钥） -->
+                    <TextBlock Grid.Row="0"
+                               Text="{Binding ProfileSummary}"
+                               Margin="0,0,0,6"
+                               AutomationProperties.AutomationId="ChatProfileText" />
 
-                <TabItem Header="Control">
-                    <TextBlock Style="{StaticResource TabBodyText}"
-                               Text="Control page placeholder - mouse, keyboard and window automation will live here." />
-                </TabItem>
+                    <!-- 消息列表：每行一条 ChatEntryViewModel，最朴素的一行 TextBlock 就够了 -->
+                    <ListBox Grid.Row="1"
+                             ItemsSource="{Binding Entries}"
+                             AutomationProperties.AutomationId="MessageList"
+                             AutomationProperties.Name="Messages">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding DisplayText}" TextWrapping="Wrap" />
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
 
-                <TabItem Header="Files">
-                    <TextBlock Style="{StaticResource TabBodyText}"
-                               Text="Files page placeholder - browsing and transferring files will live here." />
-                </TabItem>
+                    <!-- 输入行 -->
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,8,0,0">
+                        <TextBox Width="620"
+                                 Text="{Binding InputText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                 AutomationProperties.AutomationId="ChatInputBox"
+                                 AutomationProperties.Name="Chat input" />
+                        <Button Content="Send"
+                                Command="{Binding SendCommand}"
+                                Margin="8,0,0,0" Padding="14,3"
+                                AutomationProperties.AutomationId="SendButton" />
+                        <Button Content="Cancel"
+                                Command="{Binding CancelCommand}"
+                                Margin="6,0,0,0" Padding="14,3"
+                                AutomationProperties.AutomationId="CancelButton" />
+                        <Button Content="Clear"
+                                Command="{Binding ClearCommand}"
+                                Margin="6,0,0,0" Padding="14,3"
+                                AutomationProperties.AutomationId="ClearButton" />
+                    </StackPanel>
 
-                <TabItem Header="Tasks">
-                    <TextBlock Style="{StaticResource TabBodyText}"
-                               Text="Tasks page placeholder - scheduled and running tasks will live here." />
-                </TabItem>
+                    <!-- 状态行 + 已授权工具 -->
+                    <StackPanel Grid.Row="3" Margin="0,8,0,0">
+                        <TextBlock Text="{Binding StatusMessage}"
+                                   TextWrapping="Wrap"
+                                   AutomationProperties.AutomationId="ChatStatusText" />
+                        <TextBlock Text="{Binding AlwaysAllowedText, StringFormat=Always allowed: {0}}"
+                                   TextWrapping="Wrap"
+                                   Margin="0,4,0,0"
+                                   AutomationProperties.AutomationId="AlwaysAllowedText" />
+                    </StackPanel>
+                </Grid>
+            </TabItem>
 
-                <TabItem Header="Memory">
-                    <TextBlock Style="{StaticResource TabBodyText}"
-                               Text="Memory page placeholder - long term memory entries will live here." />
-                </TabItem>
+            <TabItem Header="Control">
+                <TextBlock Text="Control page - placeholder." Margin="12" />
+            </TabItem>
 
-                <TabItem Header="Board">
-                    <TextBlock Style="{StaticResource TabBodyText}"
-                               Text="Board page placeholder - kanban style notes will live here." />
-                </TabItem>
-            </TabControl>
-        </Border>
+            <TabItem Header="Files">
+                <TextBlock Text="Files page - placeholder." Margin="12" />
+            </TabItem>
+
+            <TabItem Header="Tasks">
+                <TextBlock Text="Tasks page - placeholder." Margin="12" />
+            </TabItem>
+
+            <TabItem Header="Memory">
+                <TextBlock Text="Memory page - placeholder." Margin="12" />
+            </TabItem>
+
+            <TabItem Header="Board">
+                <TextBlock Text="Board page - placeholder." Margin="12" />
+            </TabItem>
+        </TabControl>
     </Grid>
 </Window>

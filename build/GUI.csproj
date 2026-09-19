@@ -30,8 +30,11 @@
   <ItemGroup>
     <!-- 入口 XAML 必须是 ApplicationDefinition；Link 决定 baml 资源名，必须写死成文件名 -->
     <ApplicationDefinition Include="..\src\GUI\App.xaml" Link="App.xaml" />
-    <!-- 其余 XAML 是 Page；同样用 Link 保证资源名仍是 mainwindow.xaml（StartupUri 依赖它） -->
+    <!-- 其余 XAML 是 Page；Link 决定 baml 资源名，跟着文件名写死 -->
     <Page Include="..\src\GUI\MainWindow.xaml" Link="MainWindow.xaml" />
+    <!-- 设置页（齿轮打开）与危险工具确认框；都是临时脚手架，删掉这两个 Page 也就一起删了 -->
+    <Page Include="..\src\GUI\SettingsWindow.xaml" Link="SettingsWindow.xaml" />
+    <Page Include="..\src\GUI\ToolApprovalWindow.xaml" Link="ToolApprovalWindow.xaml" />
     <!-- 源码：排除 obj/bin 生成物，别把它们当源码收进来 -->
     <Compile Include="..\src\GUI\**\*.cs" Exclude="..\src\GUI\obj\**;..\src\GUI\bin\**" LinkBase="src\GUI" />
   </ItemGroup>
