@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    项目文件住在 build/，源码在 ../src/GUI/。
+    csproj 所在目录就是项目根，默认 glob 在 build/ 下找不到任何 .cs/.xaml，
+    所以这里关掉默认项、显式包含 ../src/GUI 下的源码与 XAML，
+    并用 Link / LinkBase 让它们在 VS 解决方案资源管理器里显示成 src/GUI 下的正常结构。
+    生成物（obj / bin）落在 build/ 下，src/GUI 保持干净。
+  -->
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+
+    <!-- 程序集名保持 GUI（MainWindow 里的资源 URI 是 /GUI;component/...） -->
+    <AssemblyName>GUI</AssemblyName>
+    <RootNamespace>GUI</RootNamespace>
+
+    <!-- 源码不在项目目录下，关掉默认 glob，全部显式包含，避免漏收 / 重复包含 -->
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <!-- EnableDefaultItems=false 时 SDK 不再自动推导 Link，显式打开让 LinkBase 生效 -->
+    <SynthesizeLinkMetadata>true</SynthesizeLinkMetadata>
+    <!-- 别把 build/.vs 之类的本地缓存拉进项目 -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);.vs\**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 入口 XAML 必须是 ApplicationDefinition；Link 决定 baml 资源名，必须写死成文件名 -->
+    <ApplicationDefinition Include="..\src\GUI\App.xaml" Link="App.xaml" />
+    <!-- 其余 XAML 是 Page；同样用 Link 保证资源名仍是 mainwindow.xaml（StartupUri 依赖它） -->
+    <Page Include="..\src\GUI\MainWindow.xaml" Link="MainWindow.xaml" />
+    <!-- 源码：排除 obj/bin 生成物，别把它们当源码收进来 -->
+    <Compile Include="..\src\GUI\**\*.cs" Exclude="..\src\GUI\obj\**;..\src\GUI\bin\**" LinkBase="src\GUI" />
+  </ItemGroup>
+
+</Project>

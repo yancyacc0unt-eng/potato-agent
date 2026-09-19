@@ -1,3 +1,11 @@
 # 内部工作文档：只在本地，不推 GitHub
 docs/SPEC.md
 docs/TASKS.md
+
+# 构建生成物
+bin/
+obj/
+
+# Visual Studio 本机缓存与个人设置
+.vs/
+*.user
