@@ -1,0 +1,57 @@
+<Project>
+
+  <!--
+    Markdown 渲染层。规矩照抄 Win32.csproj：
+    csproj 住 build/、源码住 src/Markdown/、显式 Include、单独开 obj/bin 子目录
+    （同一个目录下的多个项目会互相覆盖 project.assets.json → NETSDK1005）。
+    这段必须在 Sdk.props 之前求值，所以用显式 Sdk.props / Sdk.targets 导入的写法。
+
+    它【不在】build.slnx 里（那份文件不许动），但 GUI.csproj 引用了它，
+    所以 build.bat / dotnet build build\build.slnx 都会连带编译它。
+    单独编译：dotnet build build\Markdown.csproj -c Debug
+
+    ⚠ 这是本仓库第一个带 NuGet 依赖的项目（Markdig）。首次还原要联网，
+      还原结果落在 build\obj\Markdown\，其余项目完全不受影响。
+  -->
+
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>obj\Markdown\</BaseIntermediateOutputPath>
+    <BaseOutputPath>bin\Markdown\</BaseOutputPath>
+  </PropertyGroup>
+
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- 渲染结果是 WPF 的 FlowDocument / Inline，这一层离不开 WPF -->
+    <UseWPF>true</UseWPF>
+
+    <AssemblyName>PotatoAgent.Markdown</AssemblyName>
+    <RootNamespace>PotatoAgent.Markdown</RootNamespace>
+
+    <!-- 源码不在项目目录下，关掉默认 glob，全部显式包含，避免漏收 / 重复包含 -->
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <!-- EnableDefaultItems=false 时 SDK 不再自动推导 Link，显式打开让 LinkBase 生效 -->
+    <SynthesizeLinkMetadata>true</SynthesizeLinkMetadata>
+    <!-- 别把 build/.vs 之类的本地缓存拉进项目 -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);.vs\**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 控件的 XAML 是 Page；Link 决定 baml 资源名，跟着文件名写死 -->
+    <Page Include="..\src\Markdown\MarkdownViewer.xaml" Link="MarkdownViewer.xaml" />
+    <!-- 源码：排除 obj/bin 生成物，别把它们当源码收进来 -->
+    <Compile Include="..\src\Markdown\**\*.cs" Exclude="..\src\Markdown\obj\**;..\src\Markdown\bin\**" LinkBase="src\Markdown" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Markdig：MIT，纯托管、无传递依赖的 CommonMark 解析器（原始 HTML 默认就不执行） -->
+    <PackageReference Include="Markdig" Version="1.4.0" />
+  </ItemGroup>
+
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+
+</Project>

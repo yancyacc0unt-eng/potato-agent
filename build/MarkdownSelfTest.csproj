@@ -1,0 +1,50 @@
+<Project>
+
+  <!--
+    Markdown 渲染层的离线自测（不需要界面，不联网）。规矩照抄 Win32SelfTest.csproj：
+    csproj 住 build/、源码住 src/MarkdownSelfTest/、显式 Include、单独开 obj/bin 子目录
+    （同一个目录下的多个项目会互相覆盖 project.assets.json → NETSDK1005）。
+
+    它【不在】build.slnx 里，build.bat 也不会碰它 —— 想复跑就手动（XML 注释里写不了双横线，
+    下面第一行是编译，跑就直接 dotnet run 同一个 csproj）：
+      dotnet build build\MarkdownSelfTest.csproj -c Debug
+    实测输出：退出码 0 = 全过，1 = 有失败。
+
+    用的是 WPF 的 FlowDocument / RichTextBox，所以需要 UseWPF，并且 Main 上要 [STAThread]
+    （无窗口、无 Application 也能排版：自测里用 Measure/Arrange 量高度，不开窗口、不闪屏）。
+  -->
+
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>obj\MarkdownSelfTest\</BaseIntermediateOutputPath>
+    <BaseOutputPath>bin\MarkdownSelfTest\</BaseOutputPath>
+  </PropertyGroup>
+
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <AssemblyName>MarkdownSelfTest</AssemblyName>
+    <RootNamespace>PotatoAgent.Markdown.SelfTest</RootNamespace>
+
+    <UseWPF>true</UseWPF>
+
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <SynthesizeLinkMetadata>true</SynthesizeLinkMetadata>
+    <DefaultItemExcludes>$(DefaultItemExcludes);.vs\**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\src\MarkdownSelfTest\**\*.cs" Exclude="..\src\MarkdownSelfTest\obj\**;..\src\MarkdownSelfTest\bin\**" LinkBase="src\MarkdownSelfTest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="Markdown.csproj" />
+  </ItemGroup>
+
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+
+</Project>

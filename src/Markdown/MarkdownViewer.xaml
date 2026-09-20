@@ -1,0 +1,44 @@
+<UserControl x:Class="PotatoAgent.Markdown.MarkdownViewer"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!--
+        ============================================================================
+        Markdown 渲染控件 —— 干活的是 MarkdownRenderer，这里只管"把 FlowDocument 摆出来"
+        ============================================================================
+        这个文件里【一个颜色、一个字体都不写】，全部继承外层：
+
+          * Foreground / Background / FontFamily / FontSize / FontWeight 一律不设
+            → 外层（窗口、ListBoxItem、你的样式）换主题，里面自动跟着变；
+          * Background="Transparent" 不是配色，是"把外层底色透出来"：
+            RichTextBox 的主题默认底色是白的，不写这一句，深色聊天区里就会出现一块白板；
+          * BorderThickness / Padding = 0：不给自己加框、不加内边距，位置由外层排版决定。
+
+        要改样子：改外层，或者给下面这个 RichTextBox 挂你自己的 Style，
+        再或者按 MarkdownTags 里的 <c>Tag</c> 标记去样式化文档里的元素（标题、代码块、表格…）。
+        别来这个文件里写死颜色 —— 那等于把主题钉死了。
+
+        Host 就是 UIA / 自测要看的"控件树里的那个可读文本区"。
+    -->
+
+    <UserControl.Resources>
+        <!--
+            链接的隐式样式：只加下划线 + 手型光标，Foreground 故意【不设】。
+            有这条样式在，Hyperlink 的主题默认样式（把颜色写死成蓝色）就不会生效，
+            链接颜色于是跟着外层 Foreground 走 —— 深色主题下不会出现"蓝字看不见"。
+        -->
+        <Style TargetType="{x:Type Hyperlink}">
+            <Setter Property="TextDecorations" Value="Underline" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+    </UserControl.Resources>
+
+    <RichTextBox x:Name="Host"
+                 IsReadOnly="True"
+                 IsDocumentEnabled="True"
+                 Background="Transparent"
+                 BorderThickness="0"
+                 Padding="0"
+                 VerticalScrollBarVisibility="Disabled"
+                 HorizontalScrollBarVisibility="Disabled" />
+</UserControl>

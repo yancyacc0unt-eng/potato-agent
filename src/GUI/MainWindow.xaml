@@ -4,6 +4,7 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:GUI"
+        xmlns:md="clr-namespace:PotatoAgent.Markdown;assembly=PotatoAgent.Markdown"
         mc:Ignorable="d"
         Title="potatoAgent"
         Height="640" Width="1000"
@@ -63,14 +64,30 @@
                                Margin="0,0,0,6"
                                AutomationProperties.AutomationId="ChatProfileText" />
 
-                    <!-- 消息列表：每行一条 ChatEntryViewModel，最朴素的一行 TextBlock 就够了 -->
+                    <!--
+                        消息列表：每行一条 ChatEntryViewModel。
+                        正文交给 MarkdownViewer 渲染：它只负责"把 Markdown 画成富文本"，
+                        字体 / 颜色 / 底色一律继承外层（控件本身一个颜色都不写），
+                        所以你换主题时里面会自动跟着变。要改样子就改外层，或给它挂 Style。
+                        IsStreaming 是流式开关：模型吐字期间它走纯文本快路径（不闪、不卡），
+                        这一句说完变 false 才渲染成完整 Markdown —— 细节见 MarkdownViewer 的类注释。
+                        AutomationProperties.Name 绑 DisplayText，是为了 UIA / 读屏还能拿到整行原文。
+
+                        ⚠ HorizontalContentAlignment="Stretch" 不能删（实测）：ListBox 默认左对齐，
+                          会用"无限宽"去量子项，而里面折行的 RichTextBox 在无限宽度下会退化成
+                          10px 宽的一条缝（实测同一条消息：600 宽 → 行高 91px；无限宽 → 行高 671px、文字竖着折）。
+                          写 Stretch 之后行宽 = 视口宽，行高回到 119.8px。这条有回归自测兜着。
+                    -->
                     <ListBox Grid.Row="1"
                              ItemsSource="{Binding Entries}"
+                             HorizontalContentAlignment="Stretch"
                              AutomationProperties.AutomationId="MessageList"
                              AutomationProperties.Name="Messages">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
-                                <TextBlock Text="{Binding DisplayText}" TextWrapping="Wrap" />
+                                <md:MarkdownViewer Markdown="{Binding MarkdownText}"
+                                                   IsStreaming="{Binding IsStreaming}"
+                                                   AutomationProperties.Name="{Binding DisplayText}" />
                             </DataTemplate>
                         </ListBox.ItemTemplate>
                     </ListBox>

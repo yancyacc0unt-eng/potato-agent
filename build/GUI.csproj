@@ -40,9 +40,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- GUI 是唯一的可执行入口，依赖下面的两层 -->
+    <!-- GUI 是唯一的可执行入口，依赖下面的三层 -->
     <ProjectReference Include="Core.csproj" />
     <ProjectReference Include="Win32.csproj" />
+    <!-- 聊天窗口的 Markdown 渲染（MarkdownViewer 控件）；它自己带 Markdig，不反向依赖 GUI -->
+    <ProjectReference Include="Markdown.csproj" />
   </ItemGroup>
 
 </Project>

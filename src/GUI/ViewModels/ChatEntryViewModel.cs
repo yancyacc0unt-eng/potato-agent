@@ -68,6 +68,7 @@ public sealed class ChatEntryViewModel : ObservableObject
             if (SetProperty(ref _text, value))
             {
                 OnPropertyChanged(nameof(DisplayText));
+                OnPropertyChanged(nameof(MarkdownText));
             }
         }
     }
@@ -113,6 +114,17 @@ public sealed class ChatEntryViewModel : ObservableObject
         _ => $"{Role}: {Text}",
     };
 
+    /// <summary>
+    /// 交给 Markdown 控件渲染的正文（<c>MarkdownViewer.Markdown</c> 绑它）。类型 <see cref="string"/>，只读。
+    /// </summary>
+    /// <remarks>
+    /// 普通行就是 <see cref="Text"/> 原文（用户 / 模型 / 报错都算），工具行没有 Markdown 正文，
+    /// 给的是 <see cref="BuildToolLine"/> 那一行摘要 —— 否则工具行会渲染成空白，工具生命周期就看不见了。
+    /// 和 <see cref="DisplayText"/> 的唯一差别：这里【不带】<c>you:</c> / <c>agent:</c> / <c>ERROR:</c> 前缀。
+    /// 前缀会粘在首行上，把首行的 Markdown 语法（<c># 标题</c>、围栏等）废掉。
+    /// </remarks>
+    public string MarkdownText => IsTool ? BuildToolLine() : Text;
+
     // ==================== 工具行专用（非工具行保持默认值即可） ====================
 
     /// <summary>这次工具调用的 id（模型给的，用来配对结果）。类型 <see cref="string"/>，只读。</summary>
@@ -139,6 +151,7 @@ public sealed class ChatEntryViewModel : ObservableObject
             if (SetProperty(ref _toolStatus, value))
             {
                 OnPropertyChanged(nameof(DisplayText));
+                OnPropertyChanged(nameof(MarkdownText));
             }
         }
     }
@@ -152,6 +165,7 @@ public sealed class ChatEntryViewModel : ObservableObject
             if (SetProperty(ref _toolSummary, value))
             {
                 OnPropertyChanged(nameof(DisplayText));
+                OnPropertyChanged(nameof(MarkdownText));
             }
         }
     }
@@ -165,6 +179,7 @@ public sealed class ChatEntryViewModel : ObservableObject
             if (SetProperty(ref _toolSucceeded, value))
             {
                 OnPropertyChanged(nameof(DisplayText));
+                OnPropertyChanged(nameof(MarkdownText));
             }
         }
     }
@@ -178,6 +193,7 @@ public sealed class ChatEntryViewModel : ObservableObject
             if (SetProperty(ref _toolElapsedText, value))
             {
                 OnPropertyChanged(nameof(DisplayText));
+                OnPropertyChanged(nameof(MarkdownText));
             }
         }
     }
@@ -191,6 +207,7 @@ public sealed class ChatEntryViewModel : ObservableObject
             if (SetProperty(ref _toolImageCount, value))
             {
                 OnPropertyChanged(nameof(DisplayText));
+                OnPropertyChanged(nameof(MarkdownText));
             }
         }
     }

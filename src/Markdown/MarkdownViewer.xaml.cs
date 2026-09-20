@@ -1,0 +1,348 @@
+using System.Globalization;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Documents;
+
+namespace PotatoAgent.Markdown;
+
+/// <summary>
+/// 把一段 Markdown 画成富文本的控件：依赖属性 <see cref="Markdown"/>（原文）+
+/// <see cref="IsStreaming"/>（还在吐字吗）+ <see cref="CodeFontFamily"/>（代码字体，可选）。
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>一、只负责渲染，不负责长相。</b>控件不设 <c>Foreground</c> / <c>Background</c> / <c>FontFamily</c> /
+/// <c>FontSize</c>，全部从外层继承（唯一的例外是 <see cref="CodeFontFamily"/>，默认 <c>null</c> = 也继承）。
+/// 唯一"相对外层"的排版是标题字号：按控件拿到的 <c>FontSize</c> 乘一个系数，外层换字号它跟着变。
+/// 分割线 / 引用竖线 / 表格框线需要"某个颜色"，用的是继承到的 <c>Foreground</c>，同样不写死。
+/// </para>
+/// <para>
+/// <b>二、流式约定（性能就靠它）。</b>
+/// <list type="number">
+/// <item><c>IsStreaming == true</c>（模型正在逐块吐字）：走<b>纯文本快路径</b> —— 整篇当一个段落画，
+/// <b>一个字符都不做 Markdown 解析</b>。而且只追加新增的那几个字，不重建文档，所以不闪。</item>
+/// <item>这一句说完了（一轮结束、或者模型转去调工具）：把 <c>IsStreaming</c> 置回 <c>false</c>，
+/// 这时才把整篇 Markdown 解析一次、换成完整富文本。</item>
+/// </list>
+/// 为什么不逐字渲染 Markdown：每来一个字就重解析整篇是 O(n²)，长回答会肉眼可见地卡，
+/// 而且每次重排都会让文本跳一下（闪）。
+/// </para>
+/// <para>
+/// <b>三、绑定示例</b>（<c>ChatEntryViewModel</c> 上现成的两个属性）：
+/// <code>
+/// &lt;md:MarkdownViewer Markdown="{Binding MarkdownText}" IsStreaming="{Binding IsStreaming}" /&gt;
+/// </code>
+/// </para>
+/// <para>
+/// <b>四、不用管异常。</b>畸形 Markdown（未闭合的围栏 / 粗体、几万字、奇怪字符）不会抛 ——
+/// 渲染器承诺永不抛，最差是退回纯文本。
+/// </para>
+/// </remarks>
+public partial class MarkdownViewer : UserControl
+{
+    /// <summary>标题 1~6 级的字号系数（乘以控件自己的 <c>FontSize</c>）。觉得不合适就改这张表。</summary>
+    private static readonly double[] HeadingScale = { 1.8, 1.5, 1.25, 1.1, 1.0, 0.85 };
+
+    /// <summary>
+    /// 被"无限宽"测量时用的兜底宽度（本机实测：RichTextBox 在无限宽度下会退化成 10px 宽的一条缝，
+    /// 文字全部竖着折行。见 <see cref="MeasureOverride"/>）。
+    /// </summary>
+    private const double UnboundedFallbackWidth = 400;
+
+    /// <summary>上一次已经画出来的原文，用来判断流式增量（只追加，不重建）。</summary>
+    private string _renderedText = string.Empty;
+
+    /// <summary>上一次画的是不是"纯文本快路径"。</summary>
+    private bool _renderedStreaming;
+
+    /// <summary>上一次画的时候控件继承到的字号，用来判断"进了可视化树之后字号变了"要不要重画。</summary>
+    private double _renderedBaseFontSize;
+
+    /// <summary>建一个空的渲染控件（<see cref="Markdown"/> 默认空串 = 什么都不画）。</summary>
+    public MarkdownViewer()
+    {
+        InitializeComponent();
+
+        // XAML 里绑定是"模板实例化 → 赋 DataContext → 求值绑定"这个顺序，
+        // 求值时控件可能还没挂进可视化树（继承链没就位，FontSize 还是默认值）。
+        // 挂上去之后对一次账：字号真的不一样就重画一次，让标题缩放用上真正的字号。
+        Loaded += (_, _) => RebuildIfBaseFontChanged();
+
+        Rebuild();
+    }
+
+    /// <summary>
+    /// 要渲染的 Markdown 原文。类型 <see cref="string"/>，默认空串，可绑定、可双向（一般单向就够了）。
+    /// 改它就会重画；<see cref="IsStreaming"/> 为 <c>true</c> 时按纯文本画（见类注释的流式约定）。
+    /// </summary>
+    public string Markdown
+    {
+        get => (string)GetValue(MarkdownProperty);
+        set => SetValue(MarkdownProperty, value);
+    }
+
+    /// <summary>
+    /// 模型是不是还在往这段文字里吐字。类型 <see cref="bool"/>，默认 <c>false</c>，可绑定。
+    /// <c>true</c> = 纯文本快路径（不解析 Markdown、只追加）；
+    /// 这一句说完置回 <c>false</c> = 解析一次整篇、换成完整富文本。
+    /// </summary>
+    public bool IsStreaming
+    {
+        get => (bool)GetValue(IsStreamingProperty);
+        set => SetValue(IsStreamingProperty, value);
+    }
+
+    /// <summary>
+    /// 代码块 / 行内代码用哪个字体。类型 <see cref="System.Windows.Media.FontFamily"/>，
+    /// 默认 <c>null</c> = <b>不干预</b>，跟正文一样继承外层（想区分代码就自己设成 <c>Consolas</c> 之类，
+    /// 这是你的设计决定，控件不替你定）。
+    /// </summary>
+    public System.Windows.Media.FontFamily? CodeFontFamily
+    {
+        get => (System.Windows.Media.FontFamily?)GetValue(CodeFontFamilyProperty);
+        set => SetValue(CodeFontFamilyProperty, value);
+    }
+
+    /// <summary><see cref="Markdown"/> 的依赖属性。</summary>
+    public static readonly DependencyProperty MarkdownProperty = DependencyProperty.Register(
+        nameof(Markdown),
+        typeof(string),
+        typeof(MarkdownViewer),
+        new FrameworkPropertyMetadata(string.Empty, OnRenderInputChanged));
+
+    /// <summary><see cref="IsStreaming"/> 的依赖属性。</summary>
+    public static readonly DependencyProperty IsStreamingProperty = DependencyProperty.Register(
+        nameof(IsStreaming),
+        typeof(bool),
+        typeof(MarkdownViewer),
+        new FrameworkPropertyMetadata(false, OnRenderInputChanged));
+
+    /// <summary><see cref="CodeFontFamily"/> 的依赖属性。</summary>
+    public static readonly DependencyProperty CodeFontFamilyProperty = DependencyProperty.Register(
+        nameof(CodeFontFamily),
+        typeof(System.Windows.Media.FontFamily),
+        typeof(MarkdownViewer),
+        new FrameworkPropertyMetadata(null, OnRenderInputChanged));
+
+    private static void OnRenderInputChanged(DependencyObject element, DependencyPropertyChangedEventArgs args)
+        => ((MarkdownViewer)element).Rebuild();
+
+    /// <summary>
+    /// 被"无限宽"测量时给个兜底宽度。
+    /// </summary>
+    /// <param name="availableSize">父容器给的可用尺寸。</param>
+    /// <returns>本控件的期望尺寸。</returns>
+    /// <remarks>
+    /// <para>
+    /// 为什么要这一手（实测出来的坑，别删）：里面是 <c>RichTextBox</c>（横向滚动条关掉 = 按宽度折行）。
+    /// WPF 拿"无限宽"去量它时，它不知道该折多宽，会报出 <b>10px</b> 宽、然后按 10px 折行 ——
+    /// 实测：同一条消息 600 宽度下是 <c>600 x 91</c>，无限宽度下变成 <c>10 x 594</c>（一条竖着的缝）。
+    /// </para>
+    /// <para>
+    /// 而"无限宽"这种量法很常见：<c>ListBox</c> 默认左对齐就是拿无限宽量子项的
+    /// （所以聊天列表要配 <c>HorizontalContentAlignment="Stretch"</c>，见 MainWindow.xaml）。
+    /// 这里兜一手，别的宿主万一也这么量，至少不会缩成一条缝。
+    /// </para>
+    /// </remarks>
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        if (double.IsInfinity(availableSize.Width))
+        {
+            availableSize = new Size(UnboundedFallbackWidth, availableSize.Height);
+        }
+
+        return base.MeasureOverride(availableSize);
+    }
+
+    /// <summary>
+    /// 重画。三种情况：流式追加（最便宜）、流式重建（纯文本一份）、完整渲染（解析一次 Markdown）。
+    /// </summary>
+    private void Rebuild()
+    {
+        var text = Markdown ?? string.Empty;
+
+        if (IsStreaming)
+        {
+            // 快路径：不解析 Markdown。已经在流式、而且只是"末尾又多了几个字"时，
+            // 连文档都不重建 —— 只把增量追到最后一个段落上（不闪的关键）。
+            if (_renderedStreaming
+                && text.Length >= _renderedText.Length
+                && text.StartsWith(_renderedText, StringComparison.Ordinal)
+                && AppendStreamed(text[_renderedText.Length..]))
+            {
+                _renderedText = text;
+                _renderedBaseFontSize = FontSize;
+                return;
+            }
+
+            Host.Document = BuildPlainDocument(text);
+        }
+        else
+        {
+            var document = MarkdownRenderer.ToFlowDocument(text);
+            ApplyInheritedPresentation(document);
+            Host.Document = document;
+        }
+
+        _renderedText = text;
+        _renderedStreaming = IsStreaming;
+        _renderedBaseFontSize = FontSize;
+    }
+
+    /// <summary>把流式增量追加到最后一个段落上；文档结构不对（不是纯文本那份）就返回 false，让调用方重建。</summary>
+    private bool AppendStreamed(string delta)
+    {
+        if (delta.Length == 0)
+        {
+            return true;
+        }
+
+        if (Host.Document?.Blocks.LastBlock is not Paragraph paragraph)
+        {
+            return false;
+        }
+
+        MarkdownRenderer.AddPlainText(paragraph.Inlines, delta);
+        return true;
+    }
+
+    /// <summary>流式快路径的文档：整篇就是一个段落，换行照原样，不做任何 Markdown 解析。</summary>
+    private static FlowDocument BuildPlainDocument(string text)
+    {
+        var document = new FlowDocument();
+        var paragraph = new Paragraph { Tag = MarkdownTags.Paragraph };
+        MarkdownRenderer.AddPlainText(paragraph.Inlines, text);
+        document.Blocks.Add(paragraph);
+        return document;
+    }
+
+    /// <summary>
+    /// 把"需要宿主才知道"的两件事补上：标题的相对字号、框线的颜色。
+    /// 两者都来自控件<em>继承</em>到的值，所以外层换主题 / 换字号，这里跟着变。
+    /// </summary>
+    private void ApplyInheritedPresentation(FlowDocument document)
+    {
+        var headingPrefix = MarkdownTags.Heading + ":";
+        var codeBlockPrefix = MarkdownTags.CodeBlock + ":";
+        var foreground = Foreground;
+
+        foreach (var element in Walk(document.Blocks))
+        {
+            if (element.Tag is not string tag || tag.Length == 0)
+            {
+                continue;
+            }
+
+            if (tag.StartsWith(headingPrefix, StringComparison.Ordinal)
+                && int.TryParse(tag.AsSpan(headingPrefix.Length), NumberStyles.Integer, CultureInfo.InvariantCulture, out var level)
+                && level >= 1
+                && level <= HeadingScale.Length)
+            {
+                element.FontSize = FontSize * HeadingScale[level - 1];
+                continue;
+            }
+
+            switch (tag)
+            {
+                // 渲染器只给了"框线有多粗"，颜色在这里补：用继承到的前景色，不写死。
+                case MarkdownTags.Rule:
+                case MarkdownTags.Quote:
+                case MarkdownTags.TableCell:
+                    if (element is Block framed)
+                    {
+                        framed.BorderBrush = foreground;
+                    }
+
+                    break;
+            }
+
+            if (CodeFontFamily is not null
+                && (tag == MarkdownTags.InlineCode
+                    || tag == MarkdownTags.CodeBlock
+                    || tag.StartsWith(codeBlockPrefix, StringComparison.Ordinal)))
+            {
+                element.FontFamily = CodeFontFamily;
+            }
+        }
+    }
+
+    private void RebuildIfBaseFontChanged()
+    {
+        if (!IsStreaming && Math.Abs(FontSize - _renderedBaseFontSize) > 0.01)
+        {
+            Rebuild();
+        }
+    }
+
+    /// <summary>递归走一遍文档里的块和行内（列表项、表格单元格、嵌套 Span 都要走到）。</summary>
+    private static IEnumerable<TextElement> Walk(BlockCollection blocks)
+    {
+        foreach (var block in blocks)
+        {
+            yield return block;
+
+            switch (block)
+            {
+                case Section section:
+                    foreach (var child in Walk(section.Blocks))
+                    {
+                        yield return child;
+                    }
+
+                    break;
+
+                case List list:
+                    foreach (var item in list.ListItems)
+                    {
+                        foreach (var child in Walk(item.Blocks))
+                        {
+                            yield return child;
+                        }
+                    }
+
+                    break;
+
+                case Table table:
+                    foreach (var group in table.RowGroups)
+                    {
+                        foreach (var row in group.Rows)
+                        {
+                            foreach (var cell in row.Cells)
+                            {
+                                foreach (var child in Walk(cell.Blocks))
+                                {
+                                    yield return child;
+                                }
+                            }
+                        }
+                    }
+
+                    break;
+            }
+
+            if (block is Paragraph paragraph)
+            {
+                foreach (var inline in WalkInlines(paragraph.Inlines))
+                {
+                    yield return inline;
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<TextElement> WalkInlines(InlineCollection inlines)
+    {
+        foreach (var inline in inlines)
+        {
+            yield return inline;
+
+            if (inline is Span span)
+            {
+                foreach (var child in WalkInlines(span.Inlines))
+                {
+                    yield return child;
+                }
+            }
+        }
+    }
+}
