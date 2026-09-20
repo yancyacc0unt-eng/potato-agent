@@ -19,6 +19,7 @@
 //   build\bin\Win32SelfTest\Debug\net10.0-windows\Win32SelfTest.exe dump   只打印 UIA 树（不注入）
 
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Automation;
 using PotatoAgent.Win32;
@@ -31,6 +32,17 @@ internal static class Program
     private const string Ascii = "abc123";
     /// <summary>换行必须写 \r\n：单独一个 \n 会被目标控件丢掉（本机实测 Win11 记事本就是这样）。</summary>
     private const string TwoLine = "AAAA\r\nBBBB";
+
+    private const uint WM_CLOSE = 0x0010;
+
+    /// <summary>
+    /// 收尾时投 WM_CLOSE 好好关掉记事本（不用 Alt+F4：本机实测 WinUI 记事本压根不响应注入的 Alt+F4）。
+    /// </summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool PostMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr hwnd);
 
     private static readonly ComputerControl Cc = new() { Trace = line => Console.WriteLine("        · " + line) };
     private static readonly List<int> Spawned = new();
@@ -339,6 +351,13 @@ internal static class Program
     {
         Console.WriteLine("---- 实测 5：收尾 ----");
 
+        // 先"清空文档 + 好好关掉"，再考虑强杀。
+        // 为什么：Win11 记事本会把未保存内容写进 LocalState\TabState，强杀之后下一次启动
+        // 会把这堆窗口连同内容一起还原回来（本机实测：一次启动吐出 7 个窗口，其中就有
+        // 本自测用 SendKeys("abc123") 被输入法组合出来的「按不出」）。好好关掉它才会清干净。
+        var mine = Spawned.Select(pid => Desktop.FindByPid(pid)).Where(h => h != IntPtr.Zero).ToList();
+        foreach (IntPtr hwnd in mine) WipeAndClose(hwnd);
+
         foreach (int pid in Spawned) Kill(pid);
 
         // 保险丝：Win11 记事本是打包应用，"启动器进程"和"真正的 UI 进程"是两个 pid，
@@ -348,6 +367,9 @@ internal static class Program
         {
             foreach (var process in Process.GetProcessesByName("notepad"))
             {
+                IntPtr hwnd = Desktop.FindByPid(process.Id);
+                if (hwnd != IntPtr.Zero) WipeAndClose(hwnd);
+
                 Console.WriteLine($"    保险丝：清掉漏网的 Notepad pid {process.Id}");
                 try { if (!process.HasExited) process.Kill(); process.WaitForExit(3000); }
                 catch (Exception error) { Console.WriteLine($"      失败: {error.Message}"); }
@@ -368,6 +390,25 @@ internal static class Program
         foreach (var process in leftovers) process.Dispose();
 
         Console.WriteLine();
+    }
+
+    /// <summary>
+    /// 把一个记事本窗口"清空文档 → WM_CLOSE 好好关掉"。关不掉就算了，调用方后面还有强杀兜底 ——
+    /// 但那样会留下会话状态，所以这里先尽力三次。
+    /// </summary>
+    private static void WipeAndClose(IntPtr hwnd)
+    {
+        for (int attempt = 0; attempt < 3 && IsWindow(hwnd); attempt++)
+        {
+            Console.WriteLine($"    清空并关闭 {Desktop.Describe(hwnd)}（第 {attempt + 1} 次）");
+            Cc.Target = hwnd;
+            if (Desktop.Foreground() != hwnd) Cc.FocusWindow(hwnd);
+
+            // 先清空：文档里还有东西的话，WM_CLOSE 的结果是弹保存确认框而不是关窗口。
+            Cc.TypeText(string.Empty);
+            PostMessage(hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+            Thread.Sleep(400);
+        }
     }
 
     private static void Kill(int pid)

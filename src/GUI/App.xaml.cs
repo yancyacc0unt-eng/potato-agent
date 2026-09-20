@@ -41,7 +41,7 @@ public partial class App : Application
             configStore.Load();
 
             // 2) 工具：把 Win32 层的 pc_state / pc_windows / pc_screenshot（只读）
-            //    和 pc_click / pc_type / pc_keys / pc_launch（要确认）一次性注册进来。
+            //    和 pc_click / pc_type / pc_keys / pc_launch / pc_close_window（要确认）一次性注册进来。
             var tools = new ToolRegistry();
             PcTools.RegisterAll(tools);
 

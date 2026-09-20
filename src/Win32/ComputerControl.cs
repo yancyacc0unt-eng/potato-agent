@@ -8,8 +8,6 @@
 // 键鼠一律走 SendInput；只有 TypeText 例外 —— 它首选 UIA 的 ValuePattern.SetValue，
 // 拿不到 UIA 才退回 SendInput 逐字输入（KEYEVENTF_UNICODE，中文靠这个）。
 
-using System.Diagnostics;
-using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 
@@ -25,6 +23,13 @@ public enum MouseButton
 /// <summary>启动一个程序的结果。<see cref="WindowHandle"/> 可能是 Zero（窗口还没出来）。</summary>
 public readonly record struct LaunchOutcome(bool Ok, string Message, int ProcessId, IntPtr WindowHandle)
 {
+    /// <summary>
+    /// 这次启动之后<b>新出现</b>的、属于该程序的所有窗口（Z 序，最上层在前）。
+    /// 一般只有一个；但 Windows 11 记事本这类应用会"恢复上次会话"，
+    /// 本机实测一次启动就吐出过 7 个窗口 —— 所以不能假设"一次启动 = 一个窗口"。
+    /// </summary>
+    public IReadOnlyList<IntPtr> NewWindows { get; init; } = Array.Empty<IntPtr>();
+
     public override string ToString() => (Ok ? "OK   " : "FAIL ") + Message;
 }
 
@@ -356,6 +361,10 @@ public sealed class ComputerControl
     /// 启动一个程序（ShellExecuteEx）。Ok 表示"确实起来了"，
     /// WindowHandle 是尽力等到的主窗口（等不到就是 Zero，不是失败）。
     /// </summary>
+    /// <remarks>
+    /// 等到的不止一个窗口时，<see cref="LaunchOutcome.NewWindows"/> 会全都报出来 ——
+    /// 打包应用（Win11 记事本）会一次性恢复上次会话的所有窗口，只报第一个会骗人。
+    /// </remarks>
     public LaunchOutcome Launch(string path, string? arguments = null, string? workingDirectory = null, int waitForWindowMs = 8000)
     {
         if (string.IsNullOrWhiteSpace(path))
@@ -389,23 +398,97 @@ public sealed class ComputerControl
             NativeAction.CloseHandle(info.hProcess);
         }
 
-        // 一次等待、两个条件，共用一个截止时间：
+        // 等新窗口。两个条件共用一个截止时间：
         // 打包应用（记事本/画图这类）常常是"启动器进程退场、UI 进程另起一个"，
-        // 只按 pid 找必然扑空，所以补一条"按可执行文件名匹配"。
-        // 两个条件是 OR，不是先等满一个再等另一个 —— 那样第一个就会把预算吃光。
-        string stem = Path.GetFileNameWithoutExtension(path);
-        IntPtr window = Desktop.WaitFor(
-            hwnd => !before.Contains(hwnd) && (Native.ProcessId(hwnd) == pid || MatchesStem(hwnd, stem)),
-            Math.Max(0, waitForWindowMs));
+        // 只按 pid 找必然扑空，所以补一条"窗口属于目标程序"（进程名 / 窗口类名 / 映像文件名）。
+        // 找到第一个之后不立刻收工：再等一小会儿把同一批冒出来的窗口收全
+        //（会话恢复是"一个接一个"画出来的，收太早会漏报）。
+        string stem = ProgramMatch.StemOf(path);
+        var found = new List<IntPtr>();
+        long deadline = Environment.TickCount64 + Math.Max(0, waitForWindowMs);
+        long quietAt = long.MaxValue;
 
+        while (true)
+        {
+            int countBefore = found.Count;
+            foreach (IntPtr hwnd in Desktop.VisibleWindows())
+            {
+                if (before.Contains(hwnd) || found.Contains(hwnd)) continue;
+                if (Native.ProcessId(hwnd) != pid && !ProgramMatch.MatchesWindow(hwnd, stem)) continue;
+                found.Add(hwnd);
+            }
+
+            // 又冒出来新的了 → 静默期重新计时；否则等"不再有新窗口"满 SettleMs 就收工。
+            if (found.Count > countBefore)
+            {
+                quietAt = Environment.TickCount64 + LaunchSettleMs;
+            }
+
+            bool timedOut = Environment.TickCount64 >= deadline;
+            bool settled = found.Count > 0 && Environment.TickCount64 >= quietAt;
+            if (timedOut || settled) break;
+
+            Thread.Sleep(LaunchPollMs);
+        }
+
+        IntPtr window = found.Count > 0 ? found[0] : IntPtr.Zero;
+
+        // 只报"属于这个程序"的窗口；pid 命中的那个也一并算上（启动器进程可能自己就带窗口）。
         string message = window != IntPtr.Zero
-            ? $"Launch(\"{path}\"): started pid {pid}, window {Desktop.Describe(window)}"
+            ? $"Launch(\"{path}\"): started pid {pid}, window {Desktop.Describe(window)}" +
+              (found.Count > 1 ? $" (and {found.Count - 1} more window(s) of the same program)" : string.Empty)
             : $"Launch(\"{path}\"): started pid {pid}, but no NEW window appeared within {waitForWindowMs}ms";
 
-        return new LaunchOutcome(true, message, pid, window);
+        return new LaunchOutcome(true, message, pid, window) { NewWindows = found };
+    }
+
+    /// <summary>
+    /// 关掉一个窗口：先 <c>PostMessage(WM_CLOSE)</c>，没反应再补一次 <c>WM_SYSCOMMAND/SC_CLOSE</c>
+    /// （等价于用户点标题栏的 × 或菜单里的"关闭"），每一步都回读核实。
+    /// </summary>
+    /// <remarks>
+    /// 为什么不是 Alt+F4：本机实测 Win11 记事本（WinUI）<b>根本不响应注入的 Alt+F4</b> ——
+    /// 空文档也一样不关，而 SendInput 会老老实实报"12 个事件投递成功"。
+    /// WM_CLOSE 是投给窗口消息队列的，不经过输入法、也不依赖前台焦点，实测有效。
+    /// </remarks>
+    public ActionResult CloseWindow(IntPtr hwnd, int timeoutMs = 4000)
+    {
+        string action = $"CloseWindow({Desktop.Describe(hwnd)})";
+        if (hwnd == IntPtr.Zero || !Native.IsWindow(hwnd))
+            return ActionResult.Failure($"{action}: the handle is not an existing window");
+
+        if (!NativeAction.PostMessage(hwnd, NativeAction.WM_CLOSE, IntPtr.Zero, IntPtr.Zero))
+            return ActionResult.Failure($"{action}: PostMessage(WM_CLOSE) failed with Win32 error {Marshal.GetLastWin32Error()}");
+
+        if (WaitGone(hwnd, Math.Min(1500, timeoutMs)))
+            return ActionResult.Success($"{action}: closed with WM_CLOSE (verified: the window no longer exists)");
+
+        // 有些窗口不认 WM_CLOSE（或者把它当成"稍后处理"），再用系统菜单的"关闭"补一次。
+        if (!NativeAction.PostMessage(hwnd, NativeAction.WM_SYSCOMMAND, (IntPtr)NativeAction.SC_CLOSE, IntPtr.Zero))
+            return ActionResult.Failure($"{action}: WM_CLOSE did nothing and PostMessage(WM_SYSCOMMAND/SC_CLOSE) failed with Win32 error {Marshal.GetLastWin32Error()}");
+
+        if (WaitGone(hwnd, Math.Max(0, timeoutMs - 1500)))
+            return ActionResult.Success($"{action}: closed with WM_SYSCOMMAND/SC_CLOSE (WM_CLOSE alone did nothing)");
+
+        return ActionResult.Failure(
+            $"{action}: the close request WAS delivered (WM_CLOSE + SC_CLOSE) but the window is STILL OPEN after {timeoutMs}ms. " +
+            "It is refusing to close - most likely it has unsaved content and is showing a save-confirmation dialog, " +
+            "or the app ignores close requests from outside. Do NOT report this as closed.");
     }
 
     // ==================== 内部 ====================
+
+    /// <summary>轮询等一个窗口真的消失（关窗口之后的回读核实）。</summary>
+    private static bool WaitGone(IntPtr hwnd, int timeoutMs)
+    {
+        long deadline = Environment.TickCount64 + Math.Max(0, timeoutMs);
+        while (true)
+        {
+            if (!Native.IsWindow(hwnd)) return true;
+            if (Environment.TickCount64 >= deadline) return false;
+            Thread.Sleep(80);
+        }
+    }
 
     /// <summary>门禁。RequireFocus=false 是显式拆护栏，日志里必须留痕。</summary>
     private ActionResult Gate(string action)
@@ -478,6 +561,10 @@ public sealed class ComputerControl
     /// <summary>逐字输入时字与字之间的间隔。目标里有输入法时，太快会被吞。</summary>
     private const int CharacterGapMs = 15;
 
+    /// <summary>等新窗口时的轮询间隔，以及"不再有新窗口"之后还要多等多久才算收全。</summary>
+    private const int LaunchPollMs = 100;
+    private const int LaunchSettleMs = 700;
+
     /// <summary>行尾归一化：CRLF 与单个 CR 都算 LF。</summary>
     private static string Normalize(string text) => text.Replace("\r\n", "\n").Replace('\r', '\n');
 
@@ -549,22 +636,5 @@ public sealed class ComputerControl
         if (hwnd == IntPtr.Zero) return false;
         RECT bounds = Native.WindowBounds(hwnd);
         return point.X >= bounds.Left && point.X < bounds.Right && point.Y >= bounds.Top && point.Y < bounds.Bottom;
-    }
-
-    private static bool MatchesStem(IntPtr hwnd, string stem)
-    {
-        if (stem.Length == 0) return false;
-        if (Native.WindowText(hwnd).Contains(stem, StringComparison.OrdinalIgnoreCase)) return true;
-
-        try
-        {
-            int pid = Native.ProcessId(hwnd);
-            return pid > 0 && Process.GetProcessById(pid).ProcessName.Contains(stem, StringComparison.OrdinalIgnoreCase);
-        }
-        catch
-        {
-            // 提权/已退出的进程读不到名字，按不匹配处理。
-            return false;
-        }
     }
 }

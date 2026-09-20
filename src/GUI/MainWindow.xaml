@@ -22,13 +22,10 @@
         重画时要么保留这个 Click 和 MainWindow.xaml.cs 里的同名方法，
         要么把它换成你自己的一条命令。
 
-        下面这两行只是把 App.xaml 里的深色页签样式在本页清掉，
-        让脚手架回到 WPF 默认外观；重画时删掉即可。
+        ⚠️ 这里**不要**再放空的 <Style TargetType="TabControl" /> / <Style TargetType="TabItem" />。
+        放了会把 App.xaml 的深色页签样式清掉 → 内容区变白底，而 Fluent 主题的按钮/输入框本身接近白色，
+        结果就是"按钮看不见"。（2026-09-20 修复：实测白底 #FFFFFF + 白控件 #FFFFFF）
     -->
-    <Window.Resources>
-        <Style TargetType="TabControl" />
-        <Style TargetType="TabItem" />
-    </Window.Resources>
 
     <Grid Margin="10">
         <Grid.RowDefinitions>
@@ -80,21 +77,36 @@
 
                     <!-- 输入行 -->
                     <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,8,0,0">
+                        <!-- 显式配色：不依赖主题，白底/深底都看得见（Fluent 主题下控件默认接近纯白） -->
                         <TextBox Width="620"
                                  Text="{Binding InputText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                 Background="{StaticResource ControlBrush}"
+                                 Foreground="{StaticResource ForegroundBrush}"
+                                 BorderBrush="{StaticResource PanelBorderBrush}"
+                                 CaretBrush="{StaticResource ForegroundBrush}"
+                                 Padding="6,4"
                                  AutomationProperties.AutomationId="ChatInputBox"
                                  AutomationProperties.Name="Chat input" />
                         <Button Content="Send"
                                 Command="{Binding SendCommand}"
                                 Margin="8,0,0,0" Padding="14,3"
+                                Background="{StaticResource ControlBrush}"
+                                Foreground="{StaticResource ForegroundBrush}"
+                                BorderBrush="{StaticResource PanelBorderBrush}"
                                 AutomationProperties.AutomationId="SendButton" />
                         <Button Content="Cancel"
                                 Command="{Binding CancelCommand}"
                                 Margin="6,0,0,0" Padding="14,3"
+                                Background="{StaticResource ControlBrush}"
+                                Foreground="{StaticResource ForegroundBrush}"
+                                BorderBrush="{StaticResource PanelBorderBrush}"
                                 AutomationProperties.AutomationId="CancelButton" />
                         <Button Content="Clear"
                                 Command="{Binding ClearCommand}"
                                 Margin="6,0,0,0" Padding="14,3"
+                                Background="{StaticResource ControlBrush}"
+                                Foreground="{StaticResource ForegroundBrush}"
+                                BorderBrush="{StaticResource PanelBorderBrush}"
                                 AutomationProperties.AutomationId="ClearButton" />
                     </StackPanel>
 

@@ -27,13 +27,14 @@ internal static class Win32ToolTests
 
         ProbeCapture();
 
-        Program.Check(tools.Count == 7, $"注册了 7 个 pc_* 工具（实际 {registered}）");
+        Program.Check(tools.Count == 8, $"注册了 8 个 pc_* 工具（实际 {registered}）");
         Program.Check(
             tools.Get("pc_click").Risk == ToolRisk.Confirm &&
             tools.Get("pc_type").Risk == ToolRisk.Confirm &&
             tools.Get("pc_keys").Risk == ToolRisk.Confirm &&
-            tools.Get("pc_launch").Risk == ToolRisk.Confirm,
-            "pc_click / pc_type / pc_keys / pc_launch 的 Risk 都是 Confirm");
+            tools.Get("pc_launch").Risk == ToolRisk.Confirm &&
+            tools.Get("pc_close_window").Risk == ToolRisk.Confirm,
+            "pc_click / pc_type / pc_keys / pc_launch / pc_close_window 的 Risk 都是 Confirm");
         Program.Check(
             tools.Get("pc_state").Risk == ToolRisk.Safe &&
             tools.Get("pc_windows").Risk == ToolRisk.Safe &&
@@ -376,6 +377,20 @@ internal static class Win32ToolTests
         }
 
         // ---------- 清场 ----------
+        // 先把自测自己起的那个记事本"清空 + 好好关掉"：Win11 记事本会把未保存内容写进
+        // LocalState\TabState，直接强杀的话下一次启动会把它连同窗口一起还原回来 ——
+        // 那正是"一次开了两个记事本"事故的真正来源。用户自己的记事本一个都不碰。
+        if (targetHwnd != IntPtr.Zero && NativeWindowExists(targetHwnd))
+        {
+            using var wipe = JsonDocument.Parse(
+                $"{{\"text\":\"\",\"hwnd\":\"0x{targetHwnd.ToInt64():X8}\"}}");
+            await new PcTypeTool().InvokeAsync(wipe.RootElement, CancellationToken.None);
+
+            using var close = JsonDocument.Parse($"{{\"hwnd\":\"0x{targetHwnd.ToInt64():X8}\"}}");
+            var closed = await new PcCloseWindowTool().InvokeAsync(close.RootElement, CancellationToken.None);
+            Program.Info($"清场：清空文档 + pc_close_window → ok={closed.Success} | {Program.Trim(closed.Content, 110)}");
+        }
+
         var killed = 0;
         foreach (var pid in Program.NotepadPids())
         {
@@ -434,6 +449,12 @@ internal static class Win32ToolTests
     }
 
     // ==================== 小助手 ====================
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "IsWindow")]
+    private static extern bool IsWindowRaw(IntPtr hwnd);
+
+    /// <summary>这个窗口句柄还在不在（跟被测代码完全无关的独立核实）。</summary>
+    private static bool NativeWindowExists(IntPtr hwnd) => hwnd != IntPtr.Zero && IsWindowRaw(hwnd);
 
     /// <summary>
     /// 等一个窗口真的坐稳前台再动手。Win11 记事本是打包应用：窗口出现之后还会闪一下，

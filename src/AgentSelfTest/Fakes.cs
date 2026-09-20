@@ -84,6 +84,42 @@ internal sealed class FakeDangerTool : ITool
     }
 }
 
+/// <summary>
+/// 带"资源身份"的假工具：<b>参数换个写法，身份不变</b> —— 用来验证 <see cref="IToolCallIdentity"/>
+/// 这道护栏（参数逐字节那道拦不住它）。
+/// </summary>
+internal sealed class FakeTargetTool : ITool, IToolCallIdentity
+{
+    public string Name => "fake_target";
+
+    public string Description => "Test tool: acts on a named target and reports which target that is.";
+
+    public string ParametersJsonSchema => """
+        {"type":"object","properties":{"target":{"type":"string"},"note":{"type":"string"}},"required":["target"]}
+        """;
+
+    public ToolRisk Risk => ToolRisk.Safe;
+
+    /// <summary>真的被执行了几次。</summary>
+    public int Executions { get; private set; }
+
+    /// <summary>身份 = target（去掉首尾空白，忽略大小写）。note 只是换个写法的"噪声"。</summary>
+    public string? IdentityOf(JsonElement args)
+    {
+        var target = args.TryGetProperty("target", out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+        return string.IsNullOrWhiteSpace(target) ? null : target!.Trim();
+    }
+
+    public Task<ToolResult> InvokeAsync(JsonElement args, CancellationToken ct)
+    {
+        Executions++;
+        return Task.FromResult(ToolResult.Ok("acted"));
+    }
+}
+
 /// <summary>记录调用次数、按剧本作答的 approver。</summary>
 internal sealed class RecordingApprover : IToolApprover
 {

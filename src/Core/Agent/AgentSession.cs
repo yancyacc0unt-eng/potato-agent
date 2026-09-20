@@ -92,19 +92,22 @@ public sealed class AgentSession
     public int MaxToolRounds { get; set; } = 8;
 
     /// <summary>
-    /// "同一个回合里不许用一模一样的参数调同一个工具第二遍"这道护栏，默认<b>开启</b>。
+    /// "同一个回合里不许用同一个工具对同一个东西做两遍"这道护栏，默认<b>开启</b>。
+    /// 两道判定：<b>参数逐字节相同</b>（见 <see cref="ToolCallSignature"/>），
+    /// 以及<b>工具自报的资源身份相同</b>（见 <see cref="IToolCallIdentity"/>，参数换个写法也拦得住）。
     /// </summary>
     /// <remarks>
     /// <para>
     /// 第二次出现时<b>不执行</b>，只回一条带第一次结果摘要的提示给模型（<c>ERROR: You already called …</c>）。
-    /// 判定用 <see cref="ToolCallSignature"/>：属性顺序 / 空白不同的同一份参数算同一件事。
     /// </para>
     /// <para>
     /// 为什么默认开：真实事故 —— 模型想开记事本，一时没拿到窗口句柄就反复调 <c>pc_launch</c>，
     /// 而用户点过 Allow always 之后连确认框都不弹，于是静默堆出一屏记事本。
+    /// 参数逐字节那道拦不住"<c>{"path":"notepad.exe"}</c> 改成 <c>{"path":"notepad.exe","wait_ms":8000}</c>"，
+    /// 所以补了身份那道。
     /// </para>
     /// <para>
-    /// 反证也成立：<b>换参数</b>、<b>换工具</b>、<b>换一个回合</b>（新的一次 <see cref="SendAsync"/>）都不受影响。
+    /// 反证也成立：<b>换目标</b>、<b>换工具</b>、<b>换一个回合</b>（新的一次 <see cref="SendAsync"/>）都不受影响。
     /// 需要"故意重复"的场景把它设成 false 即可。
     /// </para>
     /// </remarks>
@@ -159,6 +162,10 @@ public sealed class AgentSession
         // 护栏的账本：签名 → 第一次那次调用的结果摘要。
         // 每个回合新建一份，所以"换一个回合"天然不受影响。
         var seenCalls = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        // 第二本账：工具自报的"资源身份" → 第一次那次调用的结果摘要。
+        // 大小写不敏感（Windows 上路径本来就不区分大小写），同样是每回合新建一份。
+        var seenTargets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         for (var round = 0; round < MaxToolRounds; round++)
         {
@@ -267,12 +274,31 @@ public sealed class AgentSession
                     continue;
                 }
 
-                // 护栏：这一回合里"同名工具 + 规范化后完全相同的参数"是不是已经出现过？
+                // 护栏一：这一回合里"同名工具 + 规范化后完全相同的参数"是不是已经出现过？
                 var signature = ToolCallSignature.Of(name, argumentsJson);
+                var parsed = TryParseArguments(argumentsJson, out var args, out var parseError);
+
                 string? earlierSummary = null;
                 var isDuplicate = DeduplicateToolCalls && seenCalls.TryGetValue(signature, out earlierSummary);
 
-                yield return new AgentToolStarting(call.Id, name, argumentsJson, risk, isDuplicate ? false : needsApproval);
+                // 护栏二：这一回合里"同名工具 + 同一个资源身份"是不是已经出现过？
+                // 参数写得不一样也拦得住 —— 见 IToolCallIdentity（pc_launch 的"同一个程序只启动一次"靠它）。
+                string? identityKey = null;
+                if (DeduplicateToolCalls && !isDuplicate && parsed && tool is IToolCallIdentity identityTool)
+                {
+                    var identity = identityTool.IdentityOf(args);
+                    if (!string.IsNullOrWhiteSpace(identity))
+                    {
+                        identityKey = name + "\u0000" + identity;
+                    }
+                }
+
+                string? earlierIdentitySummary = null;
+                var isSameTarget = identityKey is not null &&
+                                   seenTargets.TryGetValue(identityKey, out earlierIdentitySummary);
+
+                yield return new AgentToolStarting(
+                    call.Id, name, argumentsJson, risk, isDuplicate || isSameTarget ? false : needsApproval);
 
                 ToolResult result;
                 var elapsed = TimeSpan.Zero;
@@ -284,7 +310,13 @@ public sealed class AgentSession
                     duplicateCalls++;
                     result = ToolResult.Error(DuplicateCallNotice(name, earlierSummary!));
                 }
-                else if (!TryParseArguments(argumentsJson, out var args, out var parseError))
+                else if (isSameTarget)
+                {
+                    // 同上：同一个资源这一回合只动一次，参数换个写法也不行。
+                    duplicateCalls++;
+                    result = ToolResult.Error(SameTargetNotice(name, identityKey!, earlierIdentitySummary!));
+                }
+                else if (!parsed)
                 {
                     result = ToolResult.Error(parseError!);
                 }
@@ -321,11 +353,15 @@ public sealed class AgentSession
                     }
                 }
 
-                if (!isDuplicate)
+                if (!isDuplicate && !isSameTarget)
                 {
                     // 记下这一次的结果摘要 —— 第二次出现时提示里要带上它，模型才知道该往下走。
                     // （被拒绝的调用也记：同一个回合里不该为同一件事再弹一次确认框。）
                     seenCalls[signature] = Summarize(result);
+                    if (identityKey is not null)
+                    {
+                        seenTargets[identityKey] = Summarize(result);
+                    }
                 }
 
                 if (denial is not null)
@@ -494,6 +530,20 @@ public sealed class AgentSession
         $"You already called {name} with these exact arguments in this turn; result was: {earlierSummary}. " +
         "This duplicate call was NOT executed - the earlier result still stands. " +
         "Continue from that result; if you really need to run it again, change the arguments or start a new turn.";
+
+    /// <summary>
+    /// 第二道护栏拦下"同一个资源"时回给模型的那句话：说清"参数虽然换了写法，但动的还是同一个东西"、
+    /// 附上第一次的结果摘要，并明确下一步该拿那个结果继续做。
+    /// </summary>
+    private static string SameTargetNotice(string name, string identityKey, string earlierSummary)
+    {
+        var target = identityKey[(identityKey.IndexOf('\0') + 1)..].Replace('\u001F', ' ');
+
+        return $"You already called {name} for the SAME target (\"{target}\") in this turn - " +
+               $"different argument wording, same thing. Nothing was done a second time. Result of the first call: {earlierSummary}. " +
+               "Use what that first call returned (for pc_launch: the hwnd) and carry on. " +
+               "Only if you deliberately need a second, separate instance, ask for it explicitly (force_new_instance=true).";
+    }
 
     /// <summary>一行结果摘要，给界面做过程提示用。</summary>
     private static string Summarize(ToolResult result)

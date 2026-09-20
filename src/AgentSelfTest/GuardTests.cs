@@ -32,9 +32,61 @@ internal static class GuardTests
     public static async Task DuplicateCallsAsync()
     {
         await SameTurnAsync();
+        await SameTargetAsync();
         await NewTurnAsync();
         await ConfirmToolAccidentAsync();
         await GuardDisabledAsync();
+    }
+
+    /// <summary>
+    /// 第二道护栏（按"资源身份"）：同一回合里，同名工具 + 同一个目标 —— 参数写得不一样也拦得住。
+    /// 这正是"模型把 {"path":"notepad.exe"} 改写成 {"path":"notepad.exe","wait_ms":8000} 又开了一个"那条路。
+    /// </summary>
+    private static async Task SameTargetAsync()
+    {
+        Program.Info(
+            """
+            同一个回合里发四次调用（护栏二：按"资源身份"，不看参数写法）：
+              t1 fake_target {"target":"notepad"}                     ← 第一次，正常执行
+              t2 fake_target {"target":"NOTEPAD","note":"不同的写法"}  ← 参数不同，但身份相同 → 必须被拦
+              t3 fake_target {"target":"paint"}                       ← 换个目标 → 必须执行
+              t4 fake_target {"target":"notepad"}                     ← 与 t1 逐字节相同 → 也被拦
+            """);
+
+        var target = new FakeTargetTool();
+        var tools = new ToolRegistry();
+        tools.Register(target);
+
+        using var server = MockServer.Start((index, _) => index == 1
+            ? Sse.Script(
+                Sse.ToolCall(0, "t1", "fake_target", "{\"target\":\"notepad\"}"),
+                Sse.ToolCall(1, "t2", "fake_target", "{\"target\":\"NOTEPAD\",\"note\":\"different wording\"}"),
+                Sse.ToolCall(2, "t3", "fake_target", "{\"target\":\"paint\"}"),
+                Sse.ToolCall(3, "t4", "fake_target", "{\"target\":\"notepad\"}"),
+                Sse.Finish("tool_calls"),
+                Sse.Done)
+            : Sse.Script(Sse.Text("done"), Sse.Finish("stop"), Sse.Done));
+
+        using var provider = Provider.For(server);
+        var session = new AgentSession(provider, tools);
+
+        var events = await Runner.RunAsync(session, "act on the targets");
+        var result = Runner.Result(events);
+
+        Program.Check(target.Executions == 2, $"换目标的 t3 照常执行 —— 工具一共跑了 2 次（实际 {target.Executions}）");
+        Program.Check(result.ToolCallsExecuted == 2, $"统计：真的执行了 2 次（t1/t3）（实际 {result.ToolCallsExecuted}）");
+        Program.Check(result.DuplicateCallsSkipped == 2, $"统计：拦下 2 次（t2 同身份不同写法、t4 完全相同）（实际 {result.DuplicateCallsSkipped}）");
+        Program.Check(result.ToolCallsDenied == 0, "被身份护栏拦下的调用不算「拒绝」（它们没到权限门）");
+
+        var blocked = events.OfType<AgentToolFinished>().Where(f => !f.Success).ToList();
+        Program.Check(blocked.Count == 2, $"两次被拦各发了一条 AgentToolFinished(Success=false)（实际 {blocked.Count}）");
+        Program.Check(
+            blocked.Any(f => f.Summary.Contains("the SAME target", StringComparison.Ordinal) &&
+                             f.Summary.Contains("notepad", StringComparison.OrdinalIgnoreCase)),
+            "提示里点名了「参数换了写法，但动的是同一个目标」");
+        Program.Check(
+            blocked.Any(f => f.Summary.Contains("force_new_instance=true", StringComparison.Ordinal)),
+            "提示里告诉了模型：确实要第二个实例就显式 force_new_instance=true");
     }
 
     /// <summary>正证 + 反证 1/2：同一回合内，只有"同名 + 同参数"被拦。</summary>

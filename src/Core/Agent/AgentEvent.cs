@@ -51,7 +51,8 @@ public sealed record AgentTurnCompleted(AgentTurnResult Result) : AgentEvent;
 /// <param name="StoppedAtRoundLimit">true = 工具循环撞上了 <see cref="AgentSession.MaxToolRounds"/>，回答可能没说完。</param>
 /// <param name="NewMessages">这一轮新进历史的消息（user / assistant / tool / 图片追问）。</param>
 /// <param name="DuplicateCallsSkipped">
-/// 被"同一回合重复调用"护栏拦下、<b>没有执行</b>的次数（见 <see cref="AgentSession.DeduplicateToolCalls"/>）。
+/// 被"同一回合重复调用"护栏拦下、<b>没有执行</b>的次数（见 <see cref="AgentSession.DeduplicateToolCalls"/>）：
+/// 参数逐字节相同的那道 + 同一资源身份的那道，都算在这里。
 /// 它既不算执行也不算拒绝 —— 这些调用压根没到权限门。
 /// </param>
 public sealed record AgentTurnResult(

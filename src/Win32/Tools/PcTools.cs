@@ -12,7 +12,7 @@ namespace PotatoAgent.Win32.Tools;
 public static class PcTools
 {
     /// <summary>注册全部电脑控制工具（<c>pc_state</c> / <c>pc_windows</c> / <c>pc_screenshot</c> /
-    /// <c>pc_click</c> / <c>pc_type</c> / <c>pc_keys</c> / <c>pc_launch</c>）。</summary>
+    /// <c>pc_click</c> / <c>pc_type</c> / <c>pc_keys</c> / <c>pc_launch</c> / <c>pc_close_window</c>）。</summary>
     /// <param name="registry">目标注册表。</param>
     /// <param name="skipExisting">true = 已存在同名工具时跳过（默认 false，重名直接抛）。</param>
     /// <returns>实际注册进去的数量。</returns>
@@ -45,6 +45,7 @@ public static class PcTools
         new PcTypeTool(),
         new PcKeysTool(),
         new PcLaunchTool(),
+        new PcCloseWindowTool(),
     };
 
     private static bool RegisterAndReport(ToolRegistry registry, ITool tool)

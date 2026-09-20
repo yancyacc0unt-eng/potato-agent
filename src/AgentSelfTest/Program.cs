@@ -36,6 +36,11 @@ internal static class Program
             ("screen", "【实测 3】真实 pc_state + pc_screenshot", Win32ToolTests.RealStateAndScreenshotAsync),
             ("notepad", "【实测 4】只对自测自己开的记事本注入输入", Win32ToolTests.NotepadIsolationAsync),
             ("stream", "【实测 7】流式：增量是不是逐个、及时冒出来的", StreamingTests.IncrementalDeliveryAsync),
+            ("ghost", "【定位 A】Win11 记事本『恢复上次会话』的幽灵窗口", LaunchGuardTests.GhostWindowProbeAsync),
+            ("dup", "【定位 B/C】同一轮连开两次 pc_launch，到底开了几个", LaunchGuardTests.DuplicateLaunchProbeAsync),
+            ("close", "【定位二】pc_keys 的 Alt+F4 为什么报成功却没关掉", CloseWindowTests.AltF4ProbeAsync),
+            ("fix1", "【修复后·验收 2/3】同一轮只启动一次 + force_new_instance 反证 + 竞态", LaunchFixTests.SameTurnOnlyOneAsync),
+            ("fix2", "【修复后·验收 4】pc_close_window 真能关 + Alt+F4 关不掉就如实报失败", LaunchFixTests.CloseHonestlyAsync),
         };
 
         // 可选过滤：传一个 key 就只跑那几条（复跑一条实测时省时间，也不会去碰别的窗口）。

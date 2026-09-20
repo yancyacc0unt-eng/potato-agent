@@ -152,6 +152,20 @@ internal static class NativeAction
     internal static bool SetForegroundLockTimeout(uint timeout) =>
         SystemParametersInfo(SPI_SETFOREGROUNDLOCKTIMEOUT, 0, (IntPtr)(int)timeout, SPIF_SENDCHANGE);
 
+    // ---------------- 关窗口 ----------------
+
+    internal const uint WM_CLOSE = 0x0010;
+    internal const uint WM_SYSCOMMAND = 0x0112;
+    /// <summary>系统菜单里的"关闭" —— 和点标题栏的 × 同一条路。</summary>
+    internal const int SC_CLOSE = 0xF060;
+
+    /// <summary>
+    /// 投递一条窗口消息（不等待目标处理）。关窗口走它，不走 Alt+F4 ——
+    /// 本机实测 Win11 记事本（WinUI）不响应注入的 Alt+F4，却老实响应 WM_CLOSE。
+    /// </summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool PostMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+
     // ---------------- 菜单（点击验证用：菜单项的真实屏幕矩形） ----------------
 
     [DllImport("user32.dll")]
