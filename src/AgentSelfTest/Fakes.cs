@@ -35,6 +35,29 @@ internal sealed class FakeEchoTool : ITool
     }
 }
 
+/// <summary>第二个只读假工具：证明护栏只看"名字 + 参数"，不会把两个不同工具当成同一个。</summary>
+internal sealed class FakeOtherTool : ITool
+{
+    public string Name => "fake_other";
+
+    public string Description => "Test tool: a second, different tool.";
+
+    public string ParametersJsonSchema => """
+        {"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}
+        """;
+
+    public ToolRisk Risk => ToolRisk.Safe;
+
+    /// <summary>被执行了几次。</summary>
+    public int Executions { get; private set; }
+
+    public Task<ToolResult> InvokeAsync(JsonElement args, CancellationToken ct)
+    {
+        Executions++;
+        return Task.FromResult(ToolResult.Ok("other-pong"));
+    }
+}
+
 /// <summary>"会动用户电脑"的假工具：<see cref="ToolRisk.Confirm"/>，用来验证权限门。</summary>
 internal sealed class FakeDangerTool : ITool
 {
@@ -89,10 +112,13 @@ internal sealed class RecordingApprover : IToolApprover
 /// <summary>自测里造 Provider 的公共部分。</summary>
 internal static class Provider
 {
-    public static OpenAiProvider For(MockServer server) => new(new ProviderProfile
+    public static OpenAiProvider For(MockServer server) => For(server.BaseUrl);
+
+    /// <summary>直接按 base URL 建（慢速假服务端这类不走 <see cref="MockServer"/> 的服务端用）。</summary>
+    public static OpenAiProvider For(string baseUrl) => new(new ProviderProfile
     {
         Name = "mock",
-        BaseUrl = server.BaseUrl,
+        BaseUrl = baseUrl,
         Model = "mock-model",
         ApiKey = "test-key-not-real",
         Temperature = 0,

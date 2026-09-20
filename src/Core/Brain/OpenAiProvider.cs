@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
@@ -69,6 +70,15 @@ public sealed class OpenAiProvider : IDisposable
 
     /// <summary>这次请求真正会打的地址，设置页可以显示出来给用户核对。</summary>
     public Uri Endpoint => BuildChatCompletionsUri(Profile.BaseUrl);
+
+    /// <summary>
+    /// 最近一次 <see cref="StreamCompletionAsync"/> 的实测时序（首字节 / 首个文本增量 / 增量个数 / 增量间隔）。
+    /// 还没有跑过任何一次请求时为 null。诊断"回答像一次性蹦出来"时先看它，别猜。
+    /// </summary>
+    public StreamTiming? LastStreamTiming { get; private set; }
+
+    /// <summary>每跑完一次流式请求（正常或出错收尾）回调一次实测时序；想立刻记一笔日志就挂它。</summary>
+    public Action<StreamTiming>? TimingReported { get; set; }
 
     /// <summary>从配置仓库里取当前档案建一个 Provider；没有可用档案时抛 <see cref="ProviderConfigurationException"/>。</summary>
     [SupportedOSPlatform("windows")]   // 因为 ConfigStore 用 DPAPI
@@ -145,6 +155,11 @@ public sealed class OpenAiProvider : IDisposable
     /// 发一次流式请求，把响应逐块吐成 <see cref="ChatStreamEvent"/>。
     /// 消费方 <c>await foreach</c> 到结束会额外收到一条 <see cref="ChatFinished"/>。
     /// </summary>
+    /// <remarks>
+    /// 这一层同时负责<b>实测</b>：每次请求收尾（正常结束、出错、被提前放弃都算）都会刷新
+    /// <see cref="LastStreamTiming"/>，并回调 <see cref="TimingReported"/>。
+    /// 计时点都在"事件刚被解析出来"的那一刻，与消费方拉得多快无关。
+    /// </remarks>
     /// <param name="messages">完整上下文（含 system / 历史 / 上一轮 tool 结果）。</param>
     /// <param name="tools">可给模型调用的工具；null 或空 = 不带 tools 字段。</param>
     /// <param name="ct">取消令牌。取消时抛 <see cref="OperationCanceledException"/>，不会被包装成超时。</param>
@@ -152,6 +167,30 @@ public sealed class OpenAiProvider : IDisposable
         IReadOnlyList<ChatMessage> messages,
         IReadOnlyList<ITool>? tools = null,
         [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var timing = new StreamTimingCollector();
+
+        // yield return 不能出现在带 catch 的 try 里，但可以出现在只带 finally 的 try 里 ——
+        // 于是"每个事件立刻往上抛"和"无论怎么收场都记下时序"两件事可以同时成立。
+        try
+        {
+            await foreach (var evt in StreamCoreAsync(messages, tools, timing, ct).ConfigureAwait(false))
+            {
+                yield return evt;
+            }
+        }
+        finally
+        {
+            PublishTiming(timing.Build());
+        }
+    }
+
+    /// <summary>真正干活的流式实现；时序埋点靠 <paramref name="timing"/> 带出去。</summary>
+    private async IAsyncEnumerable<ChatStreamEvent> StreamCoreAsync(
+        IReadOnlyList<ChatMessage> messages,
+        IReadOnlyList<ITool>? tools,
+        StreamTimingCollector timing,
+        [EnumeratorCancellation] CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(messages);
 
@@ -211,12 +250,13 @@ public sealed class OpenAiProvider : IDisposable
                 throw new ProviderNetworkException($"Failed to open the response stream from {uri}: {ex.Message}", ex);
             }
 
-            await using (stream)
+            // 套一层只干一件事的壳：第一次真读到字节时打时间戳 —— 那就是"首字节时间"。
+            await using (var measured = new FirstByteStream(stream, timing))
             {
                 string? finishReason = null;
                 TokenUsage? usage = null;
 
-                await foreach (var sse in ReadEventsAsync(stream, ct).ConfigureAwait(false))
+                await foreach (var sse in ReadEventsAsync(measured, ct).ConfigureAwait(false))
                 {
                     if (sse.Data.Length == 0)
                     {
@@ -230,6 +270,11 @@ public sealed class OpenAiProvider : IDisposable
 
                     foreach (var evt in ParseChunk(sse.Data, ref finishReason, ref usage))
                     {
+                        if (evt is ChatTextDelta)
+                        {
+                            timing.ObserveTextDelta();
+                        }
+
                         yield return evt;
                     }
                 }
@@ -287,6 +332,162 @@ public sealed class OpenAiProvider : IDisposable
         if (_ownsHttpClient)
         {
             _http.Dispose();
+        }
+    }
+
+    /// <summary>把一次请求的实测时序公开出去（顺手回调观察者；观察者自己炸了不影响这次请求）。</summary>
+    private void PublishTiming(StreamTiming timing)
+    {
+        LastStreamTiming = timing;
+
+        var callback = TimingReported;
+        if (callback is null)
+        {
+            return;
+        }
+
+        try
+        {
+            callback(timing);
+        }
+        catch
+        {
+            // 观察者是外部代码，它抛异常不该把一次成功的请求变成失败。
+        }
+    }
+
+    /// <summary>一次请求的时序账本：秒表 + 首字节 + 首增量 + 增量个数 + 增量间隔。</summary>
+    private sealed class StreamTimingCollector
+    {
+        private readonly Stopwatch _clock = Stopwatch.StartNew();
+        private TimeSpan? _lastTextDelta;
+
+        /// <summary>响应体第一个字节到达的时刻（由 <see cref="FirstByteStream"/> 打点）。</summary>
+        internal TimeSpan? FirstByte { get; private set; }
+
+        /// <summary>记下"第一个字节到了"（只记第一次）。</summary>
+        internal void MarkFirstByte() => FirstByte ??= _clock.Elapsed;
+
+        private TimeSpan? FirstTextDelta { get; set; }
+
+        private int TextDeltaCount { get; set; }
+
+        private List<TimeSpan> TextDeltaGaps { get; } = new();
+
+        /// <summary>刚解析出一个文本增量：记首增量、记它与上一个之间的间隔。</summary>
+        internal void ObserveTextDelta()
+        {
+            var now = _clock.Elapsed;
+
+            FirstTextDelta ??= now;
+            if (_lastTextDelta is { } previous)
+            {
+                TextDeltaGaps.Add(now - previous);
+            }
+
+            _lastTextDelta = now;
+            TextDeltaCount++;
+        }
+
+        /// <summary>收尾：结账。</summary>
+        internal StreamTiming Build() =>
+            new(_clock.Elapsed, FirstByte, FirstTextDelta, TextDeltaCount, TextDeltaGaps);
+    }
+
+    /// <summary>
+    /// 只做一件事的只读壳：<b>第一次真的读到字节</b>时打一个时间戳，然后原样转发。
+    /// 首字节时间是"服务端第一次吐东西"的硬证据，不能靠猜。
+    /// </summary>
+    private sealed class FirstByteStream : Stream
+    {
+        private readonly Stream _inner;
+        private readonly StreamTimingCollector _timing;
+        private bool _stamped;
+
+        internal FirstByteStream(Stream inner, StreamTimingCollector timing)
+        {
+            _inner = inner;
+            _timing = timing;
+        }
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => Stamp(_inner.Read(buffer, offset, count));
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            StampAsync(_inner.ReadAsync(buffer, offset, count, cancellationToken));
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            StampAsync(_inner.ReadAsync(buffer, cancellationToken));
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _inner.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
+
+        public override async ValueTask DisposeAsync()
+        {
+            await _inner.DisposeAsync().ConfigureAwait(false);
+            await base.DisposeAsync().ConfigureAwait(false);
+        }
+
+        private int Stamp(int read)
+        {
+            Mark(read);
+            return read;
+        }
+
+        private async Task<int> StampAsync(Task<int> pending)
+        {
+            var read = await pending.ConfigureAwait(false);
+            Mark(read);
+            return read;
+        }
+
+        private async ValueTask<int> StampAsync(ValueTask<int> pending)
+        {
+            var read = await pending.ConfigureAwait(false);
+            Mark(read);
+            return read;
+        }
+
+        /// <summary>只认"第一次读到内容"那一下；读到 0（流结束）不算首字节。</summary>
+        private void Mark(int read)
+        {
+            if (_stamped || read <= 0)
+            {
+                return;
+            }
+
+            _stamped = true;
+            _timing.MarkFirstByte();
         }
     }
 

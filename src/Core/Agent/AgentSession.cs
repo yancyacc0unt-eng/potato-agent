@@ -91,6 +91,25 @@ public sealed class AgentSession
     /// <summary>单轮最多跑几轮工具调用；到顶就停下并如实标记 <see cref="AgentTurnResult.StoppedAtRoundLimit"/>。</summary>
     public int MaxToolRounds { get; set; } = 8;
 
+    /// <summary>
+    /// "同一个回合里不许用一模一样的参数调同一个工具第二遍"这道护栏，默认<b>开启</b>。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 第二次出现时<b>不执行</b>，只回一条带第一次结果摘要的提示给模型（<c>ERROR: You already called …</c>）。
+    /// 判定用 <see cref="ToolCallSignature"/>：属性顺序 / 空白不同的同一份参数算同一件事。
+    /// </para>
+    /// <para>
+    /// 为什么默认开：真实事故 —— 模型想开记事本，一时没拿到窗口句柄就反复调 <c>pc_launch</c>，
+    /// 而用户点过 Allow always 之后连确认框都不弹，于是静默堆出一屏记事本。
+    /// </para>
+    /// <para>
+    /// 反证也成立：<b>换参数</b>、<b>换工具</b>、<b>换一个回合</b>（新的一次 <see cref="SendAsync"/>）都不受影响。
+    /// 需要"故意重复"的场景把它设成 false 即可。
+    /// </para>
+    /// </remarks>
+    public bool DeduplicateToolCalls { get; set; } = true;
+
     /// <summary>带图工具结果的回灌方式，默认见 <see cref="AgentImageDelivery.FollowUpUserMessage"/>。</summary>
     public AgentImageDelivery ImageDelivery { get; set; } = AgentImageDelivery.FollowUpUserMessage;
 
@@ -132,9 +151,14 @@ public sealed class AgentSession
         var finalText = string.Empty;
         var executed = 0;
         var denied = 0;
+        var duplicateCalls = 0;
         var stoppedAtRoundLimit = false;
         string? finishReason = null;
         AgentError? failure = null;
+
+        // 护栏的账本：签名 → 第一次那次调用的结果摘要。
+        // 每个回合新建一份，所以"换一个回合"天然不受影响。
+        var seenCalls = new Dictionary<string, string>(StringComparer.Ordinal);
 
         for (var round = 0; round < MaxToolRounds; round++)
         {
@@ -142,21 +166,46 @@ public sealed class AgentSession
 
             var accumulator = new ToolCallAccumulator();
             var text = new StringBuilder();
-            var buffered = new List<AgentEvent>();
             string? roundFinishReason = null;
             AgentError? streamError = null;
 
-            // yield return 不能出现在带 catch 的 try 里（C# 语法限制），
-            // 所以这里只把事件攒进 buffered，出了 try 再吐。
+            // 手动 MoveNext：yield return 不能出现在带 catch 的 try 里（C# 语法限制），
+            // 但把 try/catch 只套在 MoveNextAsync 上就够了 —— 这样文本增量可以【当场】交给调用方，
+            // 而不是攒到整轮结束再一次性吐（实测老写法：服务端每 50ms 发一块、共 15 块时，
+            // 15 个 AgentTextDelta 全挤在最后一个毫秒到达）。
+            var stream = Provider
+                .StreamCompletionAsync(_history, Tools.Tools, ct)
+                .GetAsyncEnumerator(ct);
+
             try
             {
-                await foreach (var evt in Provider.StreamCompletionAsync(_history, Tools.Tools, ct).ConfigureAwait(false))
+                while (true)
                 {
+                    ChatStreamEvent evt;
+                    try
+                    {
+                        if (!await stream.MoveNextAsync().ConfigureAwait(false))
+                        {
+                            break;
+                        }
+
+                        evt = stream.Current;
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        streamError = new AgentError(Describe(ex), ex);
+                        break;
+                    }
+
                     switch (evt)
                     {
                         case ChatTextDelta delta:
                             text.Append(delta.Text);
-                            buffered.Add(new AgentTextDelta(delta.Text));
+                            yield return new AgentTextDelta(delta.Text);
                             break;
 
                         case ChatToolCallDelta toolDelta:
@@ -169,18 +218,9 @@ public sealed class AgentSession
                     }
                 }
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            finally
             {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                streamError = new AgentError(Describe(ex), ex);
-            }
-
-            foreach (var bufferedEvent in buffered)
-            {
-                yield return bufferedEvent;
+                await stream.DisposeAsync().ConfigureAwait(false);
             }
 
             if (streamError is not null)
@@ -227,13 +267,24 @@ public sealed class AgentSession
                     continue;
                 }
 
-                yield return new AgentToolStarting(call.Id, name, argumentsJson, risk, needsApproval);
+                // 护栏：这一回合里"同名工具 + 规范化后完全相同的参数"是不是已经出现过？
+                var signature = ToolCallSignature.Of(name, argumentsJson);
+                string? earlierSummary = null;
+                var isDuplicate = DeduplicateToolCalls && seenCalls.TryGetValue(signature, out earlierSummary);
+
+                yield return new AgentToolStarting(call.Id, name, argumentsJson, risk, isDuplicate ? false : needsApproval);
 
                 ToolResult result;
                 var elapsed = TimeSpan.Zero;
                 AgentToolDenied? denial = null;
 
-                if (!TryParseArguments(argumentsJson, out var args, out var parseError))
+                if (isDuplicate)
+                {
+                    // 不执行、也不过权限门（第一次已经问过了）：只把"你刚刚调过、结果是这个"讲清楚。
+                    duplicateCalls++;
+                    result = ToolResult.Error(DuplicateCallNotice(name, earlierSummary!));
+                }
+                else if (!TryParseArguments(argumentsJson, out var args, out var parseError))
                 {
                     result = ToolResult.Error(parseError!);
                 }
@@ -270,6 +321,13 @@ public sealed class AgentSession
                     }
                 }
 
+                if (!isDuplicate)
+                {
+                    // 记下这一次的结果摘要 —— 第二次出现时提示里要带上它，模型才知道该往下走。
+                    // （被拒绝的调用也记：同一个回合里不该为同一件事再弹一次确认框。）
+                    seenCalls[signature] = Summarize(result);
+                }
+
                 if (denial is not null)
                 {
                     yield return denial;
@@ -300,7 +358,7 @@ public sealed class AgentSession
         }
 
         yield return new AgentTurnCompleted(
-            new AgentTurnResult(finalText, executed, denied, finishReason, stoppedAtRoundLimit, newMessages));
+            new AgentTurnResult(finalText, executed, denied, finishReason, stoppedAtRoundLimit, newMessages, duplicateCalls));
     }
 
     /// <summary>不关心过程时的简版：跑完一整轮，只拿最终文本和统计。</summary>
@@ -427,6 +485,15 @@ public sealed class AgentSession
 
         return parts;
     }
+
+    /// <summary>
+    /// 护栏拦下重复调用时回给模型的那句话：说清"你已经调过了"、附上第一次的结果摘要、
+    /// 并指明接下来能怎么办 —— 免得它傻等一个不会到来的结果。
+    /// </summary>
+    private static string DuplicateCallNotice(string name, string earlierSummary) =>
+        $"You already called {name} with these exact arguments in this turn; result was: {earlierSummary}. " +
+        "This duplicate call was NOT executed - the earlier result still stands. " +
+        "Continue from that result; if you really need to run it again, change the arguments or start a new turn.";
 
     /// <summary>一行结果摘要，给界面做过程提示用。</summary>
     private static string Summarize(ToolResult result)

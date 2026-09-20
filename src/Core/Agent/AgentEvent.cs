@@ -50,10 +50,15 @@ public sealed record AgentTurnCompleted(AgentTurnResult Result) : AgentEvent;
 /// <param name="FinishReason">服务端给的结束原因（<c>stop</c> / <c>tool_calls</c> / <c>length</c>…）。</param>
 /// <param name="StoppedAtRoundLimit">true = 工具循环撞上了 <see cref="AgentSession.MaxToolRounds"/>，回答可能没说完。</param>
 /// <param name="NewMessages">这一轮新进历史的消息（user / assistant / tool / 图片追问）。</param>
+/// <param name="DuplicateCallsSkipped">
+/// 被"同一回合重复调用"护栏拦下、<b>没有执行</b>的次数（见 <see cref="AgentSession.DeduplicateToolCalls"/>）。
+/// 它既不算执行也不算拒绝 —— 这些调用压根没到权限门。
+/// </param>
 public sealed record AgentTurnResult(
     string FinalText,
     int ToolCallsExecuted,
     int ToolCallsDenied,
     string? FinishReason,
     bool StoppedAtRoundLimit,
-    IReadOnlyList<ChatMessage> NewMessages);
+    IReadOnlyList<ChatMessage> NewMessages,
+    int DuplicateCallsSkipped = 0);

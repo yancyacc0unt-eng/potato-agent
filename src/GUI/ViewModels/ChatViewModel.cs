@@ -406,9 +406,12 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
                 var tail = result.StoppedAtRoundLimit
                     ? " (stopped at the tool-round limit, the answer may be unfinished)"
                     : string.Empty;
+                var duplicates = result.DuplicateCallsSkipped > 0
+                    ? $", {result.DuplicateCallsSkipped} duplicate call(s) blocked"
+                    : string.Empty;
                 StatusMessage =
-                    $"turn done: {result.ToolCallsExecuted} tool call(s) executed, {result.ToolCallsDenied} denied, " +
-                    $"finish={result.FinishReason ?? "n/a"}{tail}";
+                    $"turn done: {result.ToolCallsExecuted} tool call(s) executed, {result.ToolCallsDenied} denied" +
+                    $"{duplicates}, finish={result.FinishReason ?? "n/a"}{tail}";
                 UpdateAlwaysAllowedText();
                 break;
             }

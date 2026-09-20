@@ -13,7 +13,7 @@ internal static class Program
     private static int _failed;
     private static int _passed;
 
-    public static async Task<int> Main()
+    public static async Task<int> Main(string[] args)
     {
         try
         {
@@ -28,10 +28,33 @@ internal static class Program
         Console.WriteLine($"时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
         Console.WriteLine();
 
-        await RunAsync("【实测 1】离线全链路（假服务器 + 假工具）", ChainTests.OfflineToolLoopAsync);
-        await RunAsync("【实测 2】权限门（无 approver / 拒绝 / 允许 / 记住允许）", ChainTests.ApprovalGateAsync);
-        await RunAsync("【实测 3】真实 pc_state + pc_screenshot", Win32ToolTests.RealStateAndScreenshotAsync);
-        await RunAsync("【实测 4】只对自测自己开的记事本注入输入", Win32ToolTests.NotepadIsolationAsync);
+        // key 是给命令行过滤用的 ASCII 短名（中文标题在没设 UTF-8 的控制台里传进来会被吃掉）。
+        var tests = new (string Key, string Title, Func<Task> Run)[]
+        {
+            ("chain", "【实测 1】离线全链路（假服务器 + 假工具）", ChainTests.OfflineToolLoopAsync),
+            ("gate", "【实测 2】权限门（无 approver / 拒绝 / 允许 / 记住允许）", ChainTests.ApprovalGateAsync),
+            ("screen", "【实测 3】真实 pc_state + pc_screenshot", Win32ToolTests.RealStateAndScreenshotAsync),
+            ("notepad", "【实测 4】只对自测自己开的记事本注入输入", Win32ToolTests.NotepadIsolationAsync),
+            ("stream", "【实测 7】流式：增量是不是逐个、及时冒出来的", StreamingTests.IncrementalDeliveryAsync),
+        };
+
+        // 可选过滤：传一个 key 就只跑那几条（复跑一条实测时省时间，也不会去碰别的窗口）。
+        var filter = args.Length > 0 ? args[0] : null;
+        if (filter is not null)
+        {
+            Console.WriteLine($"过滤: 只跑 key 含 \"{filter}\" 的用例");
+            Console.WriteLine();
+        }
+
+        foreach (var (key, title, run) in tests)
+        {
+            if (filter is not null && !key.Contains(filter, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            await RunAsync(title, run);
+        }
 
         Console.WriteLine();
         Console.WriteLine($"=== 通过 {_passed}，失败 {_failed} ===");
