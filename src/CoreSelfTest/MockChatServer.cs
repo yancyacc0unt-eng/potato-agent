@@ -329,6 +329,18 @@ internal static class Sse
         }, Wire);
     }
 
+    /// <summary>
+    /// 思考模式的思维链增量（<c>delta.reasoning_content</c>）。
+    /// 和 <see cref="Text"/> 是<b>两个不同的字段</b>，被测定代码必须把它们当两种事件，不许混。
+    /// </summary>
+    public static string Reasoning(string text)
+    {
+        return "data: " + JsonSerializer.Serialize(new
+        {
+            choices = new[] { new { index = 0, delta = new { reasoning_content = text }, finish_reason = (string?)null } },
+        }, Wire);
+    }
+
     /// <summary>工具调用增量（<paramref name="index"/> 归并，<paramref name="argumentsFragment"/> 是要拼接的碎片）。</summary>
     public static string Tool(int index, string? id, string? name, string argumentsFragment)
     {

@@ -3,4 +3,6 @@
   <Project Path="Core.csproj" Id="e0d2cb0d-d6af-416d-bc24-9ecc43acc070" />
   <Project Path="Win32.csproj" Id="a3636484-a2d8-4c7d-a11a-e9b1f615326a" />
   <Project Path="Markdown.csproj" Id="b4e7d1a9-3f62-4c85-9d10-6a2f8e5b7c43" />
+  <Project Path="Workspaces.csproj" Id="7694bae6-c6b8-4144-b7ee-270ceff36475" />
+  <Project Path="Sessions.csproj" Id="0294ce8f-3418-4dc0-b911-90a1fd1960af" />
 </Solution>

@@ -2,7 +2,7 @@
 //
 // 覆盖四件事：
 //   1) 推理等级：设了才在请求体里发 reasoning_effort，没设就一个字段都不发；
-//   2) 切模型 = 换当前档案：存盘 → 重启读回还是它 → 下一次请求的 model 字段真的换了；
+//   2) 换当前档案（多 profile）：存盘 → 重启读回还是它 → 下一次请求的 model 字段真的换了；
 //   3) 权限档位（basic / advanced）落盘 → 读回来还是它；
 //   4) config.json 里的档位被手改成乱七八糟的词时【退回 basic】，而不是把整份配置判成损坏
 //      —— 这正是不用枚举序号存盘的理由：改错一个词不该让用户连全部档案一起丢。
@@ -117,11 +117,11 @@ internal static class SwitchTests
         Console.WriteLine();
     }
 
-    // ==================== 5.3 切模型 ====================
+    // ==================== 5.3 换当前档案 ====================
 
     private static void ModelSwitch(string root, ISecretProtector protector)
     {
-        Console.WriteLine("  5.3 切模型：SetActiveProfile → 存盘 → 重启读回 → 下一次请求真的换了 model");
+        Console.WriteLine("  5.3 换当前档案（多 profile）：SetActiveProfile → 存盘 → 重启读回 → 下一次请求真的换了 model");
 
         var path = Path.Combine(root, "switch", "config.json");
         var store = new ConfigStore(path, protector);

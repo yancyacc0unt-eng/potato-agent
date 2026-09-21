@@ -67,7 +67,7 @@ public sealed class ChatImageUrl
 /// <para>
 /// <b>为什么不直接给 ChatMessage 加两个 JsonPropertyName 都叫 content 的属性</b>：System.Text.Json 不允许重名。
 /// 所以这里手写一遍写出逻辑。必须保证 <see cref="ChatMessage.Parts"/> 为 null 时输出与默认序列化<b>逐字节一致</b>
-/// （属性顺序 role → content → tool_calls → tool_call_id → name，null 一律不写），
+/// （属性顺序 role → content → reasoning_content → tool_calls → tool_call_id → name，null / 空的字符串一律不写），
 /// 否则会惊动已经在跑的 CoreSelfTest。
 /// </para>
 /// <para>反序列化只做基本还原（本地存档用），从不参与协议往返。</para>
@@ -91,6 +91,13 @@ public sealed class ChatMessageJsonConverter : JsonConverter<ChatMessage>
         else if (value.Content is not null)
         {
             writer.WriteString("content", value.Content);
+        }
+
+        // 思考模式的思维链：必须原样带回（带 tools 的请求漏了它服务端会 400）。
+        // null / 空串一律不写 —— 写一个 null 有的服务端会当成"显式清空"。
+        if (!string.IsNullOrEmpty(value.ReasoningContent))
+        {
+            writer.WriteString("reasoning_content", value.ReasoningContent);
         }
 
         if (value.ToolCalls is { Count: > 0 })
@@ -135,6 +142,12 @@ public sealed class ChatMessageJsonConverter : JsonConverter<ChatMessage>
             {
                 message.Parts = JsonSerializer.Deserialize<List<ChatContentPart>>(content.GetRawText(), options);
             }
+        }
+
+        // 思维链：本地存档读回来时也要还在（下一轮重新发请求时还得原样带回）。
+        if (root.TryGetProperty("reasoning_content", out var reasoning) && reasoning.ValueKind == JsonValueKind.String)
+        {
+            message.ReasoningContent = reasoning.GetString();
         }
 
         if (root.TryGetProperty("tool_calls", out var calls) && calls.ValueKind == JsonValueKind.Array)

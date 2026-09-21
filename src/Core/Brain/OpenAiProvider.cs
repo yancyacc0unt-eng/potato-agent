@@ -141,14 +141,99 @@ public sealed class OpenAiProvider : IDisposable
     }
 
     /// <summary>
-    /// 预留接口：拉模型列表。<b>本任务包不实现功能</b>，留着位置给设置页做"模型下拉框"。
+    /// 拉服务端当前可用的模型列表（<c>GET {base}/v1/models</c>），给界面上的"模型"下拉框用。
     /// </summary>
-    /// <exception cref="NotImplementedException">永远抛，用来提醒调用方这个功能还没做。</exception>
-    public Task<IReadOnlyList<string>> ListModelsAsync(CancellationToken ct = default)
+    /// <remarks>
+    /// <para>返回的是响应里 <c>data[].id</c> 那一串名字，已排序去重（大小写不敏感）。</para>
+    /// <para>失败一律是 <see cref="ProviderException"/> 的子类：超时 → <see cref="ProviderTimeoutException"/>、
+    /// 连不上 → <see cref="ProviderNetworkException"/>、非 2xx → <see cref="ProviderHttpException"/>、
+    /// 回的不是模型列表 → <see cref="ProviderProtocolException"/>。<b>不抛裸异常</b>，界面照旧翻译成人话。</para>
+    /// </remarks>
+    /// <param name="ct">取消令牌。</param>
+    public async Task<IReadOnlyList<string>> ListModelsAsync(CancellationToken ct = default)
     {
-        ct.ThrowIfCancellationRequested();
-        throw new NotImplementedException(
-            $"GET {BuildModelsUri(Profile.BaseUrl)} is reserved but not implemented yet (out of scope for this task).");
+        var uri = BuildModelsUri(Profile.BaseUrl);   // 地址没填/格式不对，这里就抛 ProviderConfigurationException
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        if (!string.IsNullOrEmpty(Profile.ApiKey))
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Profile.ApiKey);
+        }
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
+        {
+            throw new ProviderTimeoutException(
+                $"Request to {uri} timed out (HttpClient.Timeout = {_http.Timeout}).", _http.Timeout, ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new ProviderNetworkException($"Cannot reach {uri}: {ex.Message}", ex);
+        }
+
+        using (response)
+        {
+            var body = await ReadBodySafelyAsync(response, ct).ConfigureAwait(false);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new ProviderHttpException(response.StatusCode, body, uri.ToString());
+            }
+
+            return ParseModelList(body, uri);
+        }
+    }
+
+    /// <summary>解析 <c>GET /v1/models</c> 的响应体：取 <c>data[].id</c>，排序去重。</summary>
+    /// <remarks>
+    /// 只认 OpenAI 那套 <c>{"data":[{"id":"..."}]}</c>。服务端没实现这个端点、或者回了个别的形状时，
+    /// 抛 <see cref="ProviderProtocolException"/> 并把原文带上 —— 用户看得到原始响应，才知道该怎么改。
+    /// </remarks>
+    private static IReadOnlyList<string> ParseModelList(string body, Uri uri)
+    {
+        JsonDocument doc;
+        try
+        {
+            doc = JsonDocument.Parse(body);
+        }
+        catch (JsonException ex)
+        {
+            throw new ProviderProtocolException("The model list is not valid JSON (protocol mismatch?).", body, ex);
+        }
+
+        using (doc)
+        {
+            if (!doc.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
+            {
+                throw new ProviderProtocolException(
+                    $"The response from {uri} has no 'data' array, so it is not an OpenAI-style model list.", body);
+            }
+
+            var names = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in data.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.Object &&
+                    item.TryGetProperty("id", out var id) &&
+                    id.ValueKind == JsonValueKind.String &&
+                    !string.IsNullOrWhiteSpace(id.GetString()))
+                {
+                    names.Add(id.GetString()!);
+                }
+            }
+
+            if (names.Count == 0)
+            {
+                throw new ProviderProtocolException($"The server returned an empty model list from {uri}.", body);
+            }
+
+            return names.ToList();
+        }
     }
 
     /// <summary>
@@ -651,6 +736,17 @@ public sealed class OpenAiProvider : IDisposable
                     if (!string.IsNullOrEmpty(text))
                     {
                         events.Add(new ChatTextDelta(text!));
+                    }
+                }
+
+                // 思考模式的思维链：单独成一种事件往上走，绝不能混进正文（混了界面会把思考过程当回答显示）。
+                // 空串当成"这一片没有"（有的服务端会先发一个空的占位帧）。
+                if (delta.TryGetProperty("reasoning_content", out var reasoning) && reasoning.ValueKind == JsonValueKind.String)
+                {
+                    var thought = reasoning.GetString();
+                    if (!string.IsNullOrEmpty(thought))
+                    {
+                        events.Add(new ChatReasoningDelta(thought!));
                     }
                 }
 

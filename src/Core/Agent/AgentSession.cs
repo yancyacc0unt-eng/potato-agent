@@ -38,6 +38,9 @@ public enum AgentImageDelivery
 /// </code>
 /// <para><b>权限门</b>：<see cref="ToolRisk.Confirm"/> / <see cref="ToolRisk.Dangerous"/> 的工具一律先 await
 /// <see cref="Approver"/>；<b>没挂 approver 就一律拒绝</b>，不存在"忘了挂于是乱点用户电脑"的路径。</para>
+/// <para><b>思考模式</b>：模型吐的思维链（<see cref="ChatReasoningDelta"/>）会攒进这一轮的 assistant 消息
+/// （<see cref="ChatMessage.ReasoningContent"/>），并且<b>之后每个请求都原样带回</b> ——
+/// DeepSeek 思考模式要求带 tools 时回传所有之前轮次的 reasoning_content，漏了就 400。</para>
 /// <para><b>线程模型</b>：不是线程安全的，同一时刻只跑一轮。事件是在<b>调用方的线程</b>上吐出来的
 /// （<c>await foreach</c> 的续体），WPF 里记得回到 UI 线程再刷控件。</para>
 /// <para><b>异常</b>：模型/网络出错不会抛，而是吐一条 <see cref="AgentError"/> 然后收尾；
@@ -146,6 +149,30 @@ public sealed class AgentSession
     }
 
     /// <summary>
+    /// 把一份已有历史装回来 —— 切回旧会话、或重启后恢复上次对话时用。
+    /// 会先清空当前上下文和"总是允许"名单，再按顺序装入；null 或空表 = 只是清空。
+    /// </summary>
+    /// <remarks>只在没有正在跑一轮的时候调用（<see cref="AgentSession"/> 本来就不是线程安全的）。</remarks>
+    public void RestoreHistory(IEnumerable<ChatMessage>? messages)
+    {
+        _history.Clear();
+        _alwaysAllowed.Clear();
+
+        if (messages is null)
+        {
+            return;
+        }
+
+        foreach (var message in messages)
+        {
+            if (message is not null)
+            {
+                _history.Add(message);
+            }
+        }
+    }
+
+    /// <summary>
     /// 发一条用户消息，跑完整个"说话 → 调工具 → 回灌 → 再说"的循环，过程中把事件流式吐出来。
     /// </summary>
     /// <param name="userText">用户输入。</param>
@@ -180,6 +207,9 @@ public sealed class AgentSession
 
             var accumulator = new ToolCallAccumulator();
             var text = new StringBuilder();
+
+            // 这一轮的思维链。必须攒下来写进 assistant 消息 —— 带 tools 的请求漏了它会 400。
+            var reasoning = new StringBuilder();
             string? roundFinishReason = null;
             AgentError? streamError = null;
 
@@ -222,6 +252,12 @@ public sealed class AgentSession
                             yield return new AgentTextDelta(delta.Text);
                             break;
 
+                        case ChatReasoningDelta thought:
+                            // 只记账，不往界面上吐（思考过程不是回答正文）。
+                            // 全文会跟着这一轮的 assistant 消息进历史，下一轮请求原样带回。
+                            reasoning.Append(thought.Text);
+                            break;
+
                         case ChatToolCallDelta toolDelta:
                             accumulator.Apply(toolDelta);
                             break;
@@ -249,7 +285,10 @@ public sealed class AgentSession
             }
 
             var calls = accumulator.Build();
-            var assistant = ChatMessage.Assistant(text.Length > 0 ? text.ToString() : null, calls.Count > 0 ? calls : null);
+            var assistant = ChatMessage.Assistant(
+                text.Length > 0 ? text.ToString() : null,
+                calls.Count > 0 ? calls : null,
+                reasoning.Length > 0 ? reasoning.ToString() : null);   // 这轮没思考就不写这个字段
             _history.Add(assistant);
             newMessages.Add(assistant);
 

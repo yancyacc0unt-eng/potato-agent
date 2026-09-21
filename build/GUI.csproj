@@ -25,6 +25,13 @@
     <SynthesizeLinkMetadata>true</SynthesizeLinkMetadata>
     <!-- 别把 build/.vs 之类的本地缓存拉进项目 -->
     <DefaultItemExcludes>$(DefaultItemExcludes);.vs\**</DefaultItemExcludes>
+
+    <!--
+      单文件发布时把原生库也塞进 exe。会话系统用了 Microsoft.Data.Sqlite（Sessions 项目），
+      它带一个原生 e_sqlite3.dll：不设这一条，dist\ 里会多出这个 dll，单拷 GUI.exe 出去就起不来。
+      设了之后运行时会自解压到临时目录，dist 保持"一个 exe"。
+    -->
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
 
   <ItemGroup>
@@ -45,6 +52,10 @@
     <ProjectReference Include="Win32.csproj" />
     <!-- 聊天窗口的 Markdown 渲染（MarkdownViewer 控件）；它自己带 Markdig，不反向依赖 GUI -->
     <ProjectReference Include="Markdown.csproj" />
+    <!-- 工作区（当前工作区 + 最近列表）：ChatViewModel 用它决定"在哪干活" -->
+    <ProjectReference Include="Workspaces.csproj" />
+    <!-- 会话（SQLite data.db）：多会话列表 + 历史恢复；它带 Microsoft.Data.Sqlite -->
+    <ProjectReference Include="Sessions.csproj" />
   </ItemGroup>
 
 </Project>

@@ -85,6 +85,9 @@ public sealed class ChatSession
             var accumulator = new ToolCallAccumulator();
             var text = new StringBuilder();
 
+            // 这一轮的思维链：攒进 assistant 消息，后面每个请求都原样带回（思考模式 + tools 的硬要求）。
+            var reasoning = new StringBuilder();
+
             await foreach (var evt in Provider.StreamCompletionAsync(_history, Tools.Tools, ct).ConfigureAwait(false))
             {
                 switch (evt)
@@ -92,6 +95,11 @@ public sealed class ChatSession
                     case ChatTextDelta delta:
                         text.Append(delta.Text);
                         yield return new TurnTextDelta(delta.Text);
+                        break;
+
+                    case ChatReasoningDelta thought:
+                        // 思维链不是回答正文：不吐 TurnTextDelta，只记账。
+                        reasoning.Append(thought.Text);
                         break;
 
                     case ChatToolCallDelta toolDelta:
@@ -107,7 +115,8 @@ public sealed class ChatSession
             var calls = accumulator.Build();
             var assistant = ChatMessage.Assistant(
                 text.Length > 0 ? text.ToString() : null,
-                calls.Count > 0 ? calls : null);
+                calls.Count > 0 ? calls : null,
+                reasoning.Length > 0 ? reasoning.ToString() : null);
             _history.Add(assistant);
             newMessages.Add(assistant);
             yield return new TurnAssistantMessage(assistant);

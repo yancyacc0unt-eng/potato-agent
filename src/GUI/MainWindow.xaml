@@ -7,8 +7,8 @@
         xmlns:md="clr-namespace:PotatoAgent.Markdown;assembly=PotatoAgent.Markdown"
         mc:Ignorable="d"
         Title="potatoAgent"
-        Height="640" Width="1000"
-        MinHeight="420" MinWidth="760"
+        Height="680" Width="1240"
+        MinHeight="420" MinWidth="900"
         WindowStartupLocation="CenterScreen">
 
     <!--
@@ -50,32 +50,252 @@
         <!-- ==================== 主区域：6 个页签 ==================== -->
         <TabControl Grid.Row="1" AutomationProperties.AutomationId="MainTabs">
             <TabItem Header="Chat">
+                <!--
+                    两列：左边是临时脚手架（会话列表 + 工作区条），右边是原样没动的聊天区。
+                    这一层只是"把控件塞进去"，重画时连它一起删掉。
+                -->
                 <Grid Margin="8">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="270" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- ============================================================
+                         TEMPORARY SCAFFOLD - yancy will redraw this. Keep it minimal.
+                         左边这一栏整个都是临时的：只求"点得到"，没有设计、随时可整块删掉。
+                         绑的是 ChatViewModel.Workspace / ChatViewModel.Sessions（DataContext 就是 ChatViewModel）。
+                         所有可交互控件的配色都显式写成 {StaticResource ...}：Fluent 主题下控件默认接近纯白，
+                         在深色面板里不写就是"白底白控件"。
+                         ============================================================ -->
+                    <ScrollViewer Grid.Column="0"
+                                  VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  AutomationProperties.AutomationId="ScaffoldPanel">
+                        <StackPanel>
+
+                            <!-- ========== 工作区条（WorkspaceViewModel） ========== -->
+                            <TextBlock Text="WORKSPACE" FontWeight="SemiBold" Margin="0,0,0,4" />
+                            <TextBlock Text="{Binding Workspace.CurrentName}"
+                                       TextWrapping="Wrap"
+                                       AutomationProperties.AutomationId="WorkspaceNameText"
+                                       AutomationProperties.Name="Current workspace" />
+                            <TextBlock Text="{Binding Workspace.CurrentPath}"
+                                       Foreground="{StaticResource MutedForegroundBrush}"
+                                       FontSize="11"
+                                       TextWrapping="Wrap"
+                                       Margin="0,2,0,0"
+                                       AutomationProperties.AutomationId="WorkspacePathText"
+                                       AutomationProperties.Name="Current workspace path" />
+                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                <Button Content="Choose&#x2026;"
+                                        Command="{Binding Workspace.ChooseCommand}"
+                                        Padding="10,3"
+                                        Background="{StaticResource ControlBrush}"
+                                        Foreground="{StaticResource ForegroundBrush}"
+                                        BorderBrush="{StaticResource PanelBorderBrush}"
+                                        ToolTip="Pick a workspace folder"
+                                        AutomationProperties.AutomationId="ChooseWorkspaceButton"
+                                        AutomationProperties.Name="Choose workspace" />
+                                <Button Content="Clear"
+                                        Command="{Binding Workspace.ClearCommand}"
+                                        Margin="6,0,0,0" Padding="10,3"
+                                        Background="{StaticResource ControlBrush}"
+                                        Foreground="{StaticResource ForegroundBrush}"
+                                        BorderBrush="{StaticResource PanelBorderBrush}"
+                                        ToolTip="Clear the current workspace"
+                                        AutomationProperties.AutomationId="ClearWorkspaceButton"
+                                        AutomationProperties.Name="Clear workspace" />
+                            </StackPanel>
+                            <TextBlock Text="Recent" Foreground="{StaticResource MutedForegroundBrush}" Margin="0,8,0,3" />
+                            <ComboBox ItemsSource="{Binding Workspace.Recent}"
+                                      DisplayMemberPath="Name"
+                                      SelectionChanged="RecentWorkspace_SelectionChanged"
+                                      Background="{StaticResource ControlBrush}"
+                                      Foreground="{StaticResource ForegroundBrush}"
+                                      BorderBrush="{StaticResource PanelBorderBrush}"
+                                      ToolTip="Pick a recent folder to switch to it"
+                                      AutomationProperties.AutomationId="RecentWorkspaceSelector"
+                                      AutomationProperties.Name="Recent workspaces" />
+                            <TextBlock Text="{Binding Workspace.StatusMessage}"
+                                       Foreground="{StaticResource MutedForegroundBrush}"
+                                       FontSize="11"
+                                       TextWrapping="Wrap"
+                                       Margin="0,4,0,0"
+                                       AutomationProperties.AutomationId="WorkspaceStatusText"
+                                       AutomationProperties.Name="Workspace status" />
+
+                            <Separator Margin="0,10,0,10" />
+
+                            <!-- ========== 会话列表（SessionListViewModel） ========== -->
+                            <TextBlock Text="SESSIONS" FontWeight="SemiBold" Margin="0,0,0,4" />
+                            <ListBox x:Name="SessionList"
+                                     ItemsSource="{Binding Sessions.Sessions}"
+                                     SelectedItem="{Binding Sessions.Current, Mode=OneWay}"
+                                     SelectionChanged="SessionList_SelectionChanged"
+                                     IsSynchronizedWithCurrentItem="True"
+                                     Background="{StaticResource ControlBrush}"
+                                     Foreground="{StaticResource ForegroundBrush}"
+                                     BorderBrush="{StaticResource PanelBorderBrush}"
+                                     MaxHeight="260"
+                                     HorizontalContentAlignment="Stretch"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                     AutomationProperties.AutomationId="SessionList"
+                                     AutomationProperties.Name="Sessions">
+                                <ListBox.Resources>
+                                    <!-- 每一行也显式配色：不写就会用主题的浅色选中底 -->
+                                    <Style TargetType="ListBoxItem">
+                                        <Setter Property="Background" Value="Transparent" />
+                                        <Setter Property="Foreground" Value="{StaticResource ForegroundBrush}" />
+                                        <Setter Property="Padding" Value="4,3" />
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="ListBoxItem">
+                                                    <Border x:Name="RowRoot"
+                                                            Background="{TemplateBinding Background}"
+                                                            BorderBrush="Transparent"
+                                                            BorderThickness="3,0,0,0"
+                                                            Padding="{TemplateBinding Padding}">
+                                                        <ContentPresenter />
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter TargetName="RowRoot" Property="Background" Value="{StaticResource HoverBrush}" />
+                                                        </Trigger>
+                                                        <Trigger Property="IsSelected" Value="True">
+                                                            <Setter TargetName="RowRoot" Property="Background" Value="{StaticResource SurfaceBrush}" />
+                                                            <Setter TargetName="RowRoot" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Style>
+                                </ListBox.Resources>
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel>
+                                            <!-- Title 双向可写：在这个框里改 + 点 Rename 才落库 -->
+                                            <TextBox Text="{Binding Title, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                     Background="{StaticResource ControlBrush}"
+                                                     Foreground="{StaticResource ForegroundBrush}"
+                                                     BorderBrush="{StaticResource PanelBorderBrush}"
+                                                     CaretBrush="{StaticResource ForegroundBrush}"
+                                                     Padding="3,2"
+                                                     AutomationProperties.AutomationId="SessionTitleBox"
+                                                     AutomationProperties.Name="Session title" />
+                                            <TextBlock Text="{Binding Subtitle}"
+                                                       Foreground="{StaticResource MutedForegroundBrush}"
+                                                       FontSize="11"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Margin="1,2,0,0" />
+                                            <!-- 选中态由 SelectCommand 那边的 Refresh 负责（IsCurrent），这里不额外画 -->
+                                            <Button Content="Rename"
+                                                    Command="{Binding CommitRenameCommand}"
+                                                    HorizontalAlignment="Right"
+                                                    Margin="0,3,0,0" Padding="8,2"
+                                                    Background="{StaticResource ControlBrush}"
+                                                    Foreground="{StaticResource ForegroundBrush}"
+                                                    BorderBrush="{StaticResource PanelBorderBrush}"
+                                                    ToolTip="Save the title you typed in the box above"
+                                                    AutomationProperties.AutomationId="RenameSessionButton"
+                                                    AutomationProperties.Name="Rename session" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                <Button Content="New"
+                                        Command="{Binding Sessions.NewSessionCommand}"
+                                        Padding="10,3"
+                                        Background="{StaticResource ControlBrush}"
+                                        Foreground="{StaticResource ForegroundBrush}"
+                                        BorderBrush="{StaticResource PanelBorderBrush}"
+                                        ToolTip="Start a new empty chat (nothing is saved until you send a message)"
+                                        AutomationProperties.AutomationId="NewSessionButton"
+                                        AutomationProperties.Name="New session" />
+                                <!--
+                                    DeleteCommand / SelectCommand 的参数得是 SessionItemViewModel，
+                                    这里直接取 SessionList 上"被点中的那一行"（ElementName 绑的是控件本身，
+                                    和 SelectedItem 的绑定方向无关）—— 所以删的永远是高亮的那一条。
+                                    点列表本身就会切会话（见下面 SessionList_SelectionChanged），Open 只是兜底。
+                                -->
+                                <Button Content="Delete"
+                                        Command="{Binding Sessions.DeleteCommand}"
+                                        CommandParameter="{Binding SelectedItem, ElementName=SessionList}"
+                                        Margin="6,0,0,0" Padding="10,3"
+                                        Background="{StaticResource ControlBrush}"
+                                        Foreground="{StaticResource ForegroundBrush}"
+                                        BorderBrush="{StaticResource PanelBorderBrush}"
+                                        ToolTip="Delete the selected session (cannot be undone)"
+                                        AutomationProperties.AutomationId="DeleteSessionButton"
+                                        AutomationProperties.Name="Delete selected session" />
+                                <Button Content="Open"
+                                        Command="{Binding Sessions.SelectCommand}"
+                                        CommandParameter="{Binding SelectedItem, ElementName=SessionList}"
+                                        Margin="6,0,0,0" Padding="10,3"
+                                        Background="{StaticResource ControlBrush}"
+                                        Foreground="{StaticResource ForegroundBrush}"
+                                        BorderBrush="{StaticResource PanelBorderBrush}"
+                                        ToolTip="Open the selected session"
+                                        AutomationProperties.AutomationId="OpenSessionButton"
+                                        AutomationProperties.Name="Open selected session" />
+                            </StackPanel>
+                            <TextBlock Text="{Binding Sessions.StatusMessage}"
+                                       Foreground="{StaticResource MutedForegroundBrush}"
+                                       FontSize="11"
+                                       TextWrapping="Wrap"
+                                       Margin="0,4,0,0"
+                                       AutomationProperties.AutomationId="SessionStatusText"
+                                       AutomationProperties.Name="Session status" />
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <GridSplitter Grid.Column="1"
+                                  Width="6"
+                                  HorizontalAlignment="Stretch"
+                                  VerticalAlignment="Stretch"
+                                  Background="{StaticResource PanelBorderBrush}"
+                                  AutomationProperties.AutomationId="ScaffoldSplitter"
+                                  AutomationProperties.Name="Resize panel" />
+
+                    <Grid Grid.Column="2" Margin="8,0,0,0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
 
                     <!--
                         三个开关：模型 / 推理等级 / 权限档位。
-                        纯粹的 ComboBox：选中即生效，没有额外的按钮，也没有任何样式 ——
+                        纯粹的 ComboBox：选中即生效，没有额外的按钮（模型旁边那个 ↻ 只是去拉列表），也没有任何样式 ——
                         视觉设计由 yancy 重画时随便改，绑定契约见 ChatViewModel 的类注释（三个都只是
                         ItemsSource + SelectedItem 双向绑定）。
                         想换成按钮、下拉、单选都行，ViewModel 那边一行都不用动。
                     -->
                     <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
                         <TextBlock Text="Model" VerticalAlignment="Center" Margin="0,0,6,0" />
-                        <ComboBox Width="180"
+                        <ComboBox Width="220"
                                   ItemsSource="{Binding Models}"
                                   SelectedItem="{Binding SelectedModel, Mode=TwoWay}"
                                   Background="{StaticResource ControlBrush}"
                                   Foreground="{StaticResource ForegroundBrush}"
                                   BorderBrush="{StaticResource PanelBorderBrush}"
+                                  ToolTip="The model name sent to the server. ↻ loads the list from GET /v1/models."
                                   AutomationProperties.AutomationId="ModelSelector"
                                   AutomationProperties.Name="Model" />
+                        <Button Content="&#x21BB;"
+                                Command="{Binding RefreshModelsCommand}"
+                                Margin="6,0,0,0" Padding="8,3"
+                                Background="{StaticResource ControlBrush}"
+                                Foreground="{StaticResource ForegroundBrush}"
+                                BorderBrush="{StaticResource PanelBorderBrush}"
+                                ToolTip="Load the model list from the server"
+                                AutomationProperties.AutomationId="RefreshModelsButton"
+                                AutomationProperties.Name="Refresh model list" />
 
                         <TextBlock Text="Reasoning" VerticalAlignment="Center" Margin="16,0,6,0" />
                         <ComboBox Width="110"
@@ -190,6 +410,7 @@
                                    Margin="0,4,0,0"
                                    AutomationProperties.AutomationId="AlwaysAllowedText" />
                     </StackPanel>
+                    </Grid>
                 </Grid>
             </TabItem>
 

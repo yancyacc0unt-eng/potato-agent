@@ -9,6 +9,22 @@ public abstract record ChatStreamEvent;
 public sealed record ChatTextDelta(string Text) : ChatStreamEvent;
 
 /// <summary>
+/// 思考模式（DeepSeek reasoner 这类模型）吐出来的<b>思维链</b>增量，不是回答正文。
+/// </summary>
+/// <remarks>
+/// <para>
+/// 它是单独一种事件，<b>绝不混进 <see cref="ChatTextDelta"/></b>：混进去界面会把思考过程当回答显示，
+/// 拼出来的正文和历史里的 <c>content</c> 也会被污染。
+/// </para>
+/// <para>
+/// 消费方两种选择：不想给用户看就整个忽略这类事件（<c>CompleteTextAsync</c> / <c>StreamTextAsync</c> 就是这么做的）；
+/// 想显示就单独开一块灰字区域。要调工具时必须把拼好的全文写进
+/// <see cref="ChatMessage.ReasoningContent"/> 并回传，否则服务端 400。
+/// </para>
+/// </remarks>
+public sealed record ChatReasoningDelta(string Text) : ChatStreamEvent;
+
+/// <summary>
 /// 工具调用增量。<b>同一个工具调用的名字和参数会被拆成好几个 chunk 发过来</b>，
 /// 靠 <paramref name="Index"/> 归并（见 <see cref="ToolCallAccumulator"/>）。
 /// </summary>

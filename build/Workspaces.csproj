@@ -1,0 +1,43 @@
+<Project>
+
+  <!--
+    工作区系统：当前工作区 + 最近列表 + 工作区根定位（向上找 .potato\）。
+    规矩照抄 Core.csproj：csproj 住 build/、源码住 ../src/Workspaces/、显式 Include、
+    单独开 obj\Workspaces\ 和 bin\Workspaces\（同一个目录下的多个项目会互相覆盖 project.assets.json → NETSDK1005）。
+
+    本工程【不需要】ProjectReference Core：它只碰文件系统和 System.Text.Json，
+    不实现 ITool、不碰 ChatMessage，保持零依赖最省事（依赖方向那条铁律是"最多只能依赖 Core"，不是"必须依赖"）。
+
+    ⚠ BaseIntermediateOutputPath / BaseOutputPath 必须在 Sdk.props 之前求值，
+      所以这里用显式 Sdk.props / Sdk.targets 导入的写法，而不是 <Project Sdk="...">。
+  -->
+
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>obj\Workspaces\</BaseIntermediateOutputPath>
+    <BaseOutputPath>bin\Workspaces\</BaseOutputPath>
+  </PropertyGroup>
+
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <AssemblyName>PotatoAgent.Workspaces</AssemblyName>
+    <RootNamespace>PotatoAgent.Workspaces</RootNamespace>
+
+    <!-- 源码不在项目目录下，关掉默认 glob，全部显式包含，避免漏收 / 重复包含 -->
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <!-- EnableDefaultItems=false 时 SDK 不再自动推导 Link，显式打开让 LinkBase 生效 -->
+    <SynthesizeLinkMetadata>true</SynthesizeLinkMetadata>
+    <DefaultItemExcludes>$(DefaultItemExcludes);.vs\**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\src\Workspaces\**\*.cs" Exclude="..\src\Workspaces\obj\**;..\src\Workspaces\bin\**" LinkBase="src\Workspaces" />
+  </ItemGroup>
+
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+
+</Project>

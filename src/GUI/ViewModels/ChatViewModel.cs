@@ -2,12 +2,14 @@ using System.Collections.ObjectModel;
 using PotatoAgent.Core.Agent;
 using PotatoAgent.Core.Brain;
 using PotatoAgent.Core.Tools;
+using PotatoAgent.Sessions;
+using PotatoAgent.Workspaces;
 
 namespace GUI.ViewModels;
 
 /// <summary>
 /// 聊天页的 ViewModel：把 <see cref="AgentSession.SendAsync"/> 的事件流翻译成可绑定的界面数据，
-/// 并实现 <see cref="IToolApprover"/> 做危险工具的权限确认。
+/// 实现 <see cref="IToolApprover"/> 做危险工具的权限确认，并实现 <see cref="ISessionHost"/> 给会话列表驱动。
 /// </summary>
 /// <remarks>
 /// <para><b>界面怎么接</b>：把本对象设成聊天页的 <c>DataContext</c>。</para>
@@ -17,20 +19,30 @@ namespace GUI.ViewModels;
 /// <item><c>Button.Command="{Binding SendCommand}"</c> / <c>CancelCommand</c> / <c>ClearCommand</c>。</item>
 /// <item><c>TextBlock.Text="{Binding StatusMessage}"</c> —— 一行状态；<c>{Binding IsBusy}</c> 可以驱动转圈。</item>
 /// </list>
+/// <para><b>工作区面板与会话列表怎么接</b>：这两块各自是一个独立对象，往下钻着绑就行，主窗口的构造参数不用变 ——</para>
+/// <list type="bullet">
+/// <item>工作区：<c>{Binding Workspace.CurrentName}</c> / <c>CurrentPath</c> / <c>HasWorkspace</c> /
+/// <c>Recent</c> / <c>ChooseCommand</c> / <c>UseRecentCommand</c> / <c>ClearCommand</c> / <c>StatusMessage</c>
+/// （详见 <see cref="WorkspaceViewModel"/>）。</item>
+/// <item>会话列表：<c>{Binding Sessions.Sessions}</c> / <c>SelectCommand</c> / <c>NewSessionCommand</c> /
+/// <c>DeleteCommand</c> / <c>Current</c> / <c>StatusMessage</c>（详见 <see cref="SessionListViewModel"/>）。</item>
+/// </list>
 /// <para><b>顶上那三个开关怎么接</b>（都是 <c>ComboBox</c>，<c>SelectedItem</c> 双向绑定）：</para>
 /// <list type="bullet">
-/// <item>模型：<c>ItemsSource="{Binding Models}"</c> + <c>SelectedItem="{Binding SelectedModel, Mode=TwoWay}"</c>。</item>
+/// <item>模型：<c>ItemsSource="{Binding Models}"</c> + <c>SelectedItem="{Binding SelectedModel, Mode=TwoWay}"</c>，
+/// 列表来自服务端 <c>GET /v1/models</c>（缓存在档案里），旁边的刷新按钮绑 <c>RefreshModelsCommand</c>。</item>
 /// <item>推理等级：<c>ItemsSource="{Binding ReasoningLevels}"</c> + <c>SelectedItem="{Binding SelectedReasoning, Mode=TwoWay}"</c>。</item>
 /// <item>权限档位：<c>ItemsSource="{Binding ApprovalModeLevels}"</c> + <c>SelectedItem="{Binding SelectedApprovalMode, Mode=TwoWay}"</c>。</item>
 /// </list>
-/// <para>三个都是"选中即生效"，不需要额外按钮；各自会自己存盘并在 <see cref="StatusMessage"/> 里报告结果。
+/// <para>三个都是"选中即生效"，不需要额外按钮（模型那个旁边多一个刷新按钮，只是去拉列表，不改模型）；
+/// 各自会自己存盘并在 <see cref="StatusMessage"/> 里报告结果。
 /// 切模型会重建会话（<b>模型侧的历史会清空</b>），另外两个立即生效、不动历史。</para>
 /// <para><b>权限确认怎么接</b>：本类自己实现了 <see cref="IToolApprover"/>。界面只要在启动时挂一次
 /// <see cref="ApprovalHandler"/>（弹出自己的确认框并把用户的选择返回即可）。
 /// <b>没挂 handler 时一律拒绝</b>（fail-closed，不会出现"忘了接于是乱点用户电脑"）。</para>
 /// <para><b>线程</b>：所有可绑定属性的改动都会被送回创建本对象的那条线程（WPF 的 UI 线程），界面不用自己 Dispatcher。</para>
 /// </remarks>
-public sealed class ChatViewModel : ObservableObject, IToolApprover
+public sealed class ChatViewModel : ObservableObject, IToolApprover, ISessionHost
 {
     /// <summary>
     /// 临时系统提示词。等 T4 记忆层做完会换成"固定头部 + 全局 md + 工作区 md"，
@@ -62,6 +74,8 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
 
     private readonly ConfigStore _store;
     private readonly ToolRegistry _tools;
+    private readonly ISessionStore _sessions;
+    private readonly WorkspaceStore _workspaces;
     private readonly SynchronizationContext? _ui;
 
     private readonly Dictionary<string, ChatEntryViewModel> _toolEntries = new(StringComparer.Ordinal);
@@ -70,6 +84,24 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
     private CancellationTokenSource? _cts;
     private ChatEntryViewModel? _currentAssistant;
     private ChatEntryViewModel? _lastToolEntry;
+
+    /// <summary>当前会话的记录；新建之后还没发出第一条消息时为 null（那时它还没落盘）。</summary>
+    private SessionRecord? _currentSession;
+
+    /// <summary>等着装回大脑的历史（切会话时 Provider 还没配好就先存这儿，建会话时再装）。</summary>
+    private IReadOnlyList<ChatMessage>? _pendingRestore;
+
+    /// <summary>上面那份历史属于哪个工作区（装回时系统提示词里那句要用它）。</summary>
+    private string? _pendingRestoreWorkspace;
+
+    /// <summary>当前会话第 0 条 system 消息里写的是哪个工作区（变了就要更新那句）。</summary>
+    private string? _sessionWorkspacePath;
+
+    /// <summary>工作区在"正跑着一轮"的时候被换了：等这一轮收尾再去更新系统提示词那句。</summary>
+    private bool _workspacePromptStale;
+
+    /// <summary>刚跑完那一轮的统计与新增消息（收尾时用它落盘）。</summary>
+    private AgentTurnResult? _lastTurnResult;
 
     private string _inputText = string.Empty;
     private string _statusMessage = "Ready. Fill in Settings first if you have not saved a profile yet.";
@@ -91,11 +123,21 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
     /// <summary>建一个聊天页 ViewModel。<b>请在 UI 线程上构造</b>（它会记住当前线程用来回送属性通知）。</summary>
     /// <param name="store">配置仓库：每轮对话前用它拿当前档案建 Provider。</param>
     /// <param name="tools">工具表（记得先 <c>PcTools.RegisterAll(registry)</c>）。</param>
-    public ChatViewModel(ConfigStore store, ToolRegistry tools)
+    /// <param name="sessions">会话仓库：历史落盘 / 切会话读回来都走它（<c>Initialize()</c> 由装配点负责）。</param>
+    /// <param name="workspaces">工作区仓库：系统提示词里那句"当前工作区"取它的当前值。</param>
+    public ChatViewModel(ConfigStore store, ToolRegistry tools, ISessionStore sessions, WorkspaceStore workspaces)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _tools = tools ?? throw new ArgumentNullException(nameof(tools));
+        _sessions = sessions ?? throw new ArgumentNullException(nameof(sessions));
+        _workspaces = workspaces ?? throw new ArgumentNullException(nameof(workspaces));
         _ui = SynchronizationContext.Current;
+
+        // 两个子面板：界面直接 {Binding Workspace.Xxx} / {Binding Sessions.Xxx} 往下钻，
+        // 所以 MainWindow 的构造参数一个都不用改。
+        Workspace = new WorkspaceViewModel(_workspaces, new FolderPicker());
+        Sessions = new SessionListViewModel(_sessions, this);
+        _workspaces.Changed += OnWorkspaceStoreChanged;
 
         SendCommand = new AsyncRelayCommand(
             SendAsync,
@@ -104,12 +146,20 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
         CancelCommand = new RelayCommand(Cancel, () => IsBusy);
         ClearCommand = new RelayCommand(ClearConversation, () => !IsBusy);
         ResetApprovalsCommand = new RelayCommand(ResetApprovals, () => !IsBusy);
+        RefreshModelsCommand = new AsyncRelayCommand(
+            RefreshModelsAsync,
+            () => !IsBusy && _store.ActiveProfile is not null,
+            ex => AddError(Describe(ex)));
 
         // 当前档案摘要 + 三个开关先跟配置文件对齐（App 启动时已经 Load 过了）。
         // 摘要不在这里算的话，启动瞬间会显示 "(no provider configured yet)"，
         // 而旁边的模型下拉框明明已经选中了某个档案 —— 自相矛盾。
         ProfileSummary = DescribeActiveProfile();
         SyncSelectionsFromConfig();
+
+        // 启动不自动建会话：库里已经有会话就接着最近打开的那一个，一个都没有就留空白
+        // （空白会话等第一条消息才 Create，所以绝不会攒出一堆空会话）。
+        RestoreMostRecentSession();
     }
 
     /// <summary>
@@ -203,18 +253,51 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
     /// <summary>底层会话对象（想直接调 Core 时用）。没建过会话时为 null。类型 <see cref="AgentSession?"/>，只读。</summary>
     public AgentSession? Session => _session;
 
+    /// <summary>
+    /// 工作区面板（当前工作区 / 最近打开 / 选择文件夹 / 清除）。类型 <see cref="WorkspaceViewModel"/>，只读。
+    /// </summary>
+    /// <remarks>
+    /// 界面直接从聊天页往下钻着绑：<c>{Binding Workspace.CurrentName}</c>（目录名，没选过是 <c>No workspace</c>）、
+    /// <c>{Binding Workspace.CurrentPath}</c>（完整路径，没选过是空串）、<c>{Binding Workspace.HasWorkspace}</c>、
+    /// <c>{Binding Workspace.Recent}</c>（每项 <c>Name</c> / <c>Path</c>）、<c>{Binding Workspace.ChooseCommand}</c>、
+    /// <c>{Binding Workspace.UseRecentCommand}</c>（配 <c>CommandParameter="{Binding}"</c>）、
+    /// <c>{Binding Workspace.ClearCommand}</c>、<c>{Binding Workspace.StatusMessage}</c>。
+    /// 换工作区之后系统提示词里那句"当前工作区"会跟着更新（正在跑一轮时等这轮收尾再更新，绝不每轮追加）。
+    /// </remarks>
+    public WorkspaceViewModel Workspace { get; }
+
+    /// <summary>
+    /// 会话列表面板（列出 / 切换 / 新建 / 改名 / 删除）。类型 <see cref="SessionListViewModel"/>，只读。
+    /// </summary>
+    /// <remarks>
+    /// 界面直接从聊天页往下钻着绑：<c>{Binding Sessions.Sessions}</c>（每项 <see cref="SessionItemViewModel"/>）、
+    /// <c>{Binding Sessions.SelectCommand}</c> / <c>{Binding Sessions.DeleteCommand}</c>
+    /// （两个都要配 <c>CommandParameter="{Binding}"</c>）、<c>{Binding Sessions.NewSessionCommand}</c>、
+    /// <c>{Binding Sessions.Current}</c>、<c>{Binding Sessions.StatusMessage}</c>。
+    /// </remarks>
+    public SessionListViewModel Sessions { get; }
+
+    /// <summary>
+    /// 当前会话的记录（<see cref="ISessionHost"/> 的实现）。类型 <see cref="SessionRecord?"/>，只读。
+    /// <b>新建之后还没发出第一条消息时为 null</b> —— 那时候它还没落盘。
+    /// </summary>
+    public SessionRecord? CurrentSession => _currentSession;
+
     // ==================== 三个开关：模型 / 推理等级 / 权限档位 ====================
 
     /// <summary>
-    /// 可选的模型列表 —— 其实就是全部档案名（一套档案 = 一个 base URL + 一把密钥 + 一个模型名）。
-    /// 类型 <see cref="ObservableCollection{T}"/>（元素是 <see cref="string"/>），只读。
-    /// 绑 <c>ComboBox.ItemsSource</c>；设置页保存后会自己刷新。
+    /// 可选的模型列表（服务端 <c>GET /v1/models</c> 拉到的模型名，存在档案里当缓存）。
+    /// 类型 <see cref="ObservableCollection{T}"/>（元素是 <see cref="string"/>），只读，绑 <c>ComboBox.ItemsSource</c>。
     /// </summary>
+    /// <remarks>
+    /// 启动时填的是<b>上次拉到的缓存</b>（加上当前档案正在用的那个模型名），不联网 ——
+    /// 想真的重拉就点 <see cref="RefreshModelsCommand"/>（那个会打一次 <c>GET {base}/v1/models</c>）。
+    /// </remarks>
     public ObservableCollection<string> Models { get; } = new();
 
     /// <summary>
-    /// 当前模型（<see cref="Models"/> 里选中的那一个档案名）。类型 <see cref="string?"/>，双向绑定。
-    /// <b>改它会立刻存盘并重建会话</b>：换了模型，模型侧那串上下文接不上，所以历史会被清空
+    /// 当前模型名（<see cref="Models"/> 里选中的那一个）。类型 <see cref="string?"/>，双向绑定。
+    /// <b>改它会立刻写回当前档案、存盘并重建会话</b>：换了模型，模型侧那串上下文接不上，所以历史会被清空
     /// （界面上的文字记录保留）。正在跑一轮时切不动 —— 会被回滚并在 <see cref="StatusMessage"/> 里说明。
     /// </summary>
     public string? SelectedModel
@@ -235,9 +318,16 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
                 return;
             }
 
-            SwitchModel(value!);
+            ApplyModel(value!);
         }
     }
+
+    /// <summary>
+    /// 异步命令：联网拉一次服务端模型列表（<c>GET {base}/v1/models</c>），成功就刷新 <see cref="Models"/>
+    /// 并写进档案当缓存。<b>失败不抛</b>，变成一句 <see cref="StatusMessage"/>
+    /// （密钥不对、服务端没实现这个端点都很常见，那是正常情况不是崩溃）。
+    /// </summary>
+    public AsyncRelayCommand RefreshModelsCommand { get; }
 
     /// <summary>
     /// 推理等级下拉框的选项。第一项 <see cref="DefaultReasoningLevel"/> = 一个字段都不发（服务端默认），
@@ -313,6 +403,18 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
     /// </summary>
     public void RebuildSession()
     {
+        RebuildSessionCore();
+        StatusMessage = "Settings applied: the next message will use the new profile. Conversation history was reset.";
+    }
+
+    /// <summary>
+    /// <see cref="RebuildSession"/> 的动作部分：丢掉旧 Provider / 上下文 / 工具行账本，并把三个下拉框对齐配置。
+    /// </summary>
+    /// <remarks>
+    /// 状态文本由调用方自己写 —— 切会话、换工作区也走这条路径，但要说的话不一样。
+    /// </remarks>
+    private void RebuildSessionCore()
+    {
         var old = _session;
         _session = null;
         _toolEntries.Clear();
@@ -336,7 +438,12 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
         AlwaysAllowedText = "(none)";
         ProfileSummary = DescribeActiveProfile();
         SyncSelectionsFromConfig();
-        StatusMessage = "Settings applied: the next message will use the new profile. Conversation history was reset.";
+
+        // 换了 Provider 就是换了上下文：等着装回的历史和"那句工作区"一起作废。
+        _pendingRestore = null;
+        _pendingRestoreWorkspace = null;
+        _sessionWorkspacePath = null;
+        _workspacePromptStale = false;
     }
 
     /// <summary>关窗口时调：取消正在跑的一轮并释放 Provider。</summary>
@@ -359,6 +466,22 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
         {
             // 同上，退出路径上不抛。
         }
+
+        // 界面都要关了，别再让工作区仓库的事件回调进来。
+        _workspaces.Changed -= OnWorkspaceStoreChanged;
+
+        // 会话库（SqliteSessionStore）实现了 IDisposable：退出前关掉它，数据早就落盘了。
+        if (_sessions is IDisposable disposable)
+        {
+            try
+            {
+                disposable.Dispose();
+            }
+            catch (Exception)
+            {
+                // 退出路径上不抛。
+            }
+        }
     }
 
     /// <summary>正在跑的话就取消（关窗口用，不弹提示）。</summary>
@@ -377,6 +500,322 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
         }
     }
 
+    // ==================== 会话：切 / 新建 / 落盘（ISessionHost） ====================
+
+    /// <summary>
+    /// 启动时接着上次：把最近打开的那个会话读回来。一个都没有（或读库失败）就留空白 ——
+    /// <b>绝不自动建空会话</b>，第一条消息才 Create。
+    /// </summary>
+    private void RestoreMostRecentSession()
+    {
+        SessionRecord? latest;
+        try
+        {
+            latest = _sessions.List().FirstOrDefault();
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Could not read the saved conversations: {Describe(ex)}";
+            return;
+        }
+
+        if (latest is null)
+        {
+            return;   // 全新用户：留空白，等第一条消息
+        }
+
+        _ = OpenSessionAsync(latest);
+    }
+
+    /// <summary>
+    /// 切到某个会话：读历史 → 装回大脑 → 重建界面上的气泡。实现 <see cref="ISessionHost.OpenSessionAsync"/>。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>正在跑一轮时拒绝</b>（写一句英文状态）：换上下文会让这一轮的结果落进错误的会话。</para>
+    /// <para><b>只重放 user / assistant 的文本气泡</b>：工具过程行、纯 tool_calls 的消息、带图的消息都不重放
+    /// —— 那些是当时的现场，重放出来只会让人以为工具又跑了一遍。这一点会在状态栏里用英文说明。</para>
+    /// <para>读历史失败、或 Provider 建不出来（还没配好 API key）都不抛：前者写状态并保持原样，
+    /// 后者把历史先存着，等用户发出第一条消息建会话时再装回去。</para>
+    /// </remarks>
+    public Task OpenSessionAsync(SessionRecord session)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+
+        if (IsBusy)
+        {
+            StatusMessage = "Finish or cancel the current turn before switching sessions.";
+            return Task.CompletedTask;
+        }
+
+        IReadOnlyList<ChatMessage> messages;
+        try
+        {
+            messages = _sessions.LoadMessages(session.Id);
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Could not open '{session.Title}': {Describe(ex)}";
+            return Task.CompletedTask;
+        }
+
+        // 沿用现有的"重建 AgentSession"路径：丢旧 Provider / 上下文（这里会顺带清掉待装回的历史）。
+        RebuildSessionCore();
+        _currentSession = session;
+        RebuildEntries(messages);
+
+        var workspace = SessionWorkspace(session);
+        try
+        {
+            EnsureSession(workspace).RestoreHistory(WithSystemPrompt(workspace, messages));
+            StatusMessage = $"Opened '{session.Title}': {messages.Count} saved message(s), {Entries.Count} bubble(s) " +
+                            "rebuilt. Tool activity from the past is not replayed.";
+        }
+        catch (Exception ex)
+        {
+            // Provider 还没配好：历史别丢，等建会话的时候再装（见 EnsureSession）。
+            _pendingRestore = messages;
+            _pendingRestoreWorkspace = workspace;
+            StatusMessage = $"Opened '{session.Title}' ({messages.Count} message(s)), but the provider is not ready yet " +
+                            $"({Describe(ex)}). The history will be loaded with your next message.";
+        }
+
+        Sessions.Refresh();
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// 新建一个空会话并切过去。实现 <see cref="ISessionHost.NewSessionAsync"/>。
+    /// <b>不落盘</b>：等它发出第一条消息才 Create，所以连点也不会攒出一堆空会话。
+    /// </summary>
+    public Task NewSessionAsync()
+    {
+        if (IsBusy)
+        {
+            StatusMessage = "Finish or cancel the current turn before starting a new chat.";
+            return Task.CompletedTask;
+        }
+
+        RebuildSessionCore();
+        _currentSession = null;
+        Entries.Clear();
+        UpdateAlwaysAllowedText();
+        Sessions.Refresh();
+        StatusMessage = "New chat. It will be saved as soon as you send the first message.";
+        return Task.CompletedTask;
+    }
+
+    /// <summary>第一条消息才真的落盘建记录（标题先用默认的 "New chat"，一轮结束后再按首句话命名）。</summary>
+    private void EnsureSessionRecord(string? workspace)
+    {
+        if (_currentSession is not null)
+        {
+            return;
+        }
+
+        try
+        {
+            _currentSession = _sessions.Create(title: null, workspace: workspace);
+            Sessions.Refresh();
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"This turn will not be saved (could not create the session): {Describe(ex)}";
+        }
+    }
+
+    /// <summary>一轮结束后落盘：追加这一轮的新消息、按首句话自动命名、刷新会话列表。</summary>
+    private void PersistTurn(string userText)
+    {
+        var result = _lastTurnResult;
+        _lastTurnResult = null;
+
+        var session = _currentSession;
+        if (session is null)
+        {
+            return;   // 本轮没能建记录，没什么可写的
+        }
+
+        try
+        {
+            if (result is not null && result.NewMessages.Count > 0)
+            {
+                // 图片不进库（base64 太大，旧截图也不会再喂回模型）：落盘前过一遍清洗。
+                _sessions.Append(session.Id, result.NewMessages.Select(SessionMessageSanitizer.Sanitize));
+            }
+
+            // 标题还是默认值时才自动命名 —— 用户改过就绝不覆盖。
+            var stored = _sessions.Get(session.Id);
+            if (stored is not null)
+            {
+                if (string.Equals(stored.Title, SessionTitle.DefaultTitle, StringComparison.Ordinal))
+                {
+                    var title = SessionTitle.FromFirstMessage(userText);
+                    if (!string.Equals(title, SessionTitle.DefaultTitle, StringComparison.Ordinal) &&
+                        _sessions.Rename(session.Id, title))
+                    {
+                        stored = _sessions.Get(session.Id) ?? stored;
+                    }
+                }
+
+                _currentSession = stored;
+            }
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"This turn could not be saved: {Describe(ex)}";
+        }
+
+        Sessions.Refresh();
+    }
+
+    /// <summary>
+    /// 用一份历史重建界面气泡（切会话时用）。<b>只画 user / assistant 的文本气泡</b>：
+    /// 工具过程行、纯 tool_calls 的 assistant 消息、带图的消息都不重放 —— 它们是当时的现场，
+    /// 重放出来会让人以为工具又跑了一遍。
+    /// </summary>
+    private void RebuildEntries(IReadOnlyList<ChatMessage> messages)
+    {
+        Entries.Clear();
+        _toolEntries.Clear();
+        _lastToolEntry = null;
+        _currentAssistant = null;
+
+        foreach (var message in messages)
+        {
+            if (string.IsNullOrEmpty(message.Content))
+            {
+                continue;
+            }
+
+            if (string.Equals(message.Role, "user", StringComparison.Ordinal))
+            {
+                Entries.Add(ChatEntryViewModel.User(message.Content!));
+            }
+            else if (string.Equals(message.Role, "assistant", StringComparison.Ordinal))
+            {
+                var entry = ChatEntryViewModel.Assistant();
+                entry.Text = message.Content!;
+                entry.IsStreaming = false;
+                Entries.Add(entry);
+            }
+        }
+    }
+
+    // ==================== 系统提示词里的"当前工作区"那句 ====================
+
+    /// <summary>
+    /// 系统提示词 = 固定人设 + 一句"当前工作区"。
+    /// </summary>
+    /// <remarks>
+    /// 这句<b>只在建会话 / 工作区变化时</b>生成，<b>绝不每轮追加</b> —— 系统提示词是历史第 0 号节点，
+    /// 每轮变化的内容会让前缀缓存整段失效（踩过的坑）。
+    /// </remarks>
+    private static string BuildSystemPrompt(string? workspace)
+    {
+        if (string.IsNullOrWhiteSpace(workspace))
+        {
+            return SystemPrompt +
+                " No workspace folder is selected right now: ask the user which folder to work in before you touch their files.";
+        }
+
+        return SystemPrompt +
+            $" The current workspace folder is {workspace.Trim()}. Treat it as the working directory when you look for or create files.";
+    }
+
+    /// <summary>给一份历史补上第 0 条 system 消息（工作区那句按参数现场生成）。</summary>
+    private static List<ChatMessage> WithSystemPrompt(string? workspace, IReadOnlyList<ChatMessage> messages)
+    {
+        var restored = new List<ChatMessage>(messages.Count + 1) { ChatMessage.System(BuildSystemPrompt(workspace)) };
+        restored.AddRange(messages);
+        return restored;
+    }
+
+    /// <summary>当前工作区的路径；没选过就是 null。</summary>
+    private string? CurrentWorkspacePath()
+    {
+        var path = _workspaces.Current?.Path;
+        return string.IsNullOrWhiteSpace(path) ? null : path;
+    }
+
+    /// <summary>切回某个已落盘的会话时，系统提示词里该写哪个工作区（它自己绑的那个优先）。</summary>
+    private string? SessionWorkspace(SessionRecord session) =>
+        string.IsNullOrWhiteSpace(session.Workspace) ? CurrentWorkspacePath() : session.Workspace;
+
+    /// <summary>两个工作区路径是不是同一个（Windows 上大小写不敏感）。</summary>
+    private static bool PathEquals(string? left, string? right) =>
+        string.Equals(left ?? string.Empty, right ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>工作区仓库变了（换 / 清空）：系统提示词里那句要跟着更新。</summary>
+    private void OnWorkspaceStoreChanged(object? sender, EventArgs e) => OnUi(HandleWorkspaceChanged);
+
+    /// <summary>工作区变了：没在跑一轮就立刻更新那句，正在跑就先记下来、等收尾再更新。</summary>
+    private void HandleWorkspaceChanged()
+    {
+        var workspace = CurrentWorkspacePath();
+        if (PathEquals(_sessionWorkspacePath, workspace))
+        {
+            return;   // 没变（或者本来就是同一个目录）
+        }
+
+        if (IsBusy)
+        {
+            // 跑着一轮的时候绝不能碰会话（旧 Provider 正在被用）：等这轮收尾再更新。
+            _workspacePromptStale = true;
+            return;
+        }
+
+        if (_session is null)
+        {
+            // 还没建会话：下一句话建会话时自然会带上新的工作区那句。
+            _sessionWorkspacePath = workspace;
+            return;
+        }
+
+        ApplyWorkspaceToSession(workspace);
+    }
+
+    /// <summary>
+    /// 把第 0 条 system 消息换成"按当前工作区生成"的那一句，<b>对话历史原样保留</b>
+    /// （换工作区不该把聊天记录清掉）。注意 <see cref="AgentSession.RestoreHistory"/> 会清空"总是允许"名单。
+    /// </summary>
+    private void ApplyWorkspaceToSession(string? workspace)
+    {
+        var session = _session;
+        if (session is null)
+        {
+            _sessionWorkspacePath = workspace;
+            return;
+        }
+
+        var rebuilt = new List<ChatMessage> { ChatMessage.System(BuildSystemPrompt(workspace)) };
+        foreach (var message in session.History)
+        {
+            if (!string.Equals(message.Role, "system", StringComparison.Ordinal))
+            {
+                rebuilt.Add(message);
+            }
+        }
+
+        session.RestoreHistory(rebuilt);
+        _sessionWorkspacePath = workspace;
+        UpdateAlwaysAllowedText();   // RestoreHistory 清空了"总是允许"名单
+        StatusMessage = workspace is null
+            ? "Workspace cleared. The system prompt no longer names a folder (the conversation is kept, 'always allow' was reset)."
+            : $"Workspace: {workspace}. The system prompt was updated (the conversation is kept, 'always allow' was reset).";
+    }
+
+    /// <summary>工作区在跑一轮的时候被换了：这一轮收尾后再去更新系统提示词那句。</summary>
+    private void ApplyPendingWorkspaceChange()
+    {
+        if (!_workspacePromptStale)
+        {
+            return;
+        }
+
+        _workspacePromptStale = false;
+        ApplyWorkspaceToSession(CurrentWorkspacePath());
+    }
+
     // ==================== 发一轮 ====================
 
     private async Task SendAsync()
@@ -393,12 +832,15 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
             return;
         }
 
+        // 建会话时该用哪个工作区：有历史待装回就用那个会话自己绑的，否则用当前工作区。
+        var workspace = _pendingRestore is null ? CurrentWorkspacePath() : _pendingRestoreWorkspace;
+
         var session = _session;
         if (session is null)
         {
             try
             {
-                session = EnsureSession();
+                session = EnsureSession(workspace);
             }
             catch (ProviderException ex)
             {
@@ -413,6 +855,9 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
                 return;
             }
         }
+
+        // 第一条消息才落盘建会话记录（"New chat" 那时还没进库）：建不出来不拦着发消息，只是这一轮存不下来。
+        EnsureSessionRecord(workspace);
 
         InputText = string.Empty;
         Add(ChatEntryViewModel.User(text));
@@ -466,6 +911,10 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
             PendingApprovalTool = null;
             UpdateAlwaysAllowedText();
             IsBusy = false;
+
+            // 落盘 + 自动命名 + 刷新会话列表；再补一次"跑的时候被换掉的工作区那句"。
+            PersistTurn(text);
+            ApplyPendingWorkspaceChange();
 
             _cts?.Dispose();
             _cts = null;
@@ -535,6 +984,7 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
             case AgentTurnCompleted completed:
             {
                 var result = completed.Result;
+                _lastTurnResult = result;   // 收尾时用它把这一轮的新消息落盘
                 var tail = result.StoppedAtRoundLimit
                     ? " (stopped at the tool-round limit, the answer may be unfinished)"
                     : string.Empty;
@@ -632,6 +1082,7 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
         CancelCommand.RaiseCanExecuteChanged();
         ClearCommand.RaiseCanExecuteChanged();
         ResetApprovalsCommand.RaiseCanExecuteChanged();
+        RefreshModelsCommand.RaiseCanExecuteChanged();
     }
 
     // ==================== IToolApprover ====================
@@ -707,16 +1158,23 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
 
     // ==================== 三个开关的实现 ====================
 
-    /// <summary>切模型：换当前档案 → 存盘 → 重建会话（历史清空）→ 报告结果。</summary>
-    private void SwitchModel(string name)
+    /// <summary>切模型：写回当前档案的模型名 → 存盘 → 重建会话（历史清空）→ 报告结果。</summary>
+    private void ApplyModel(string name)
     {
-        if (!_store.SetActiveProfile(name))
+        var profile = _store.ActiveProfile;
+        if (profile is null)
         {
-            StatusMessage = $"Profile '{name}' is not in the config any more.";
+            StatusMessage = "No provider profile yet - add one in Settings first.";
             SyncSelectionsFromConfig();
             return;
         }
 
+        if (string.Equals(profile.Model, name, StringComparison.Ordinal))
+        {
+            return;   // 值没变（例如只是把列表对齐了一下），别白清一次历史。
+        }
+
+        profile.Model = name;
         var saved = TrySaveConfig(out var saveError);
 
         // RebuildSession 会丢掉旧 Provider 和旧上下文，也会自己把三个下拉框对齐一遍。
@@ -725,6 +1183,38 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
         StatusMessage = saved
             ? $"Model switched to '{name}'. Conversation history was reset."
             : $"Model switched to '{name}' for this session, but saving config.json failed: {saveError}";
+    }
+
+    /// <summary>点刷新：开一个临时 Provider 拉一次模型列表，成功后写进档案当缓存。失败只报告，不抛。</summary>
+    private async Task RefreshModelsAsync()
+    {
+        var profile = _store.ActiveProfile;
+        if (profile is null)
+        {
+            StatusMessage = "No provider profile yet - add one in Settings first.";
+            return;
+        }
+
+        StatusMessage = $"Loading the model list from {profile.BaseUrl}...";
+
+        try
+        {
+            // 临时建一个 Provider（自己 new 的 HttpClient 由它自己释放），不给当前会话添乱。
+            using var provider = OpenAiProvider.FromActiveProfile(_store);
+            var names = await provider.ListModelsAsync().ConfigureAwait(true);
+
+            profile.KnownModels = names.ToList();
+            var saved = TrySaveConfig(out var saveError);
+
+            SyncSelectionsFromConfig();
+            StatusMessage = saved
+                ? $"Model list updated: {names.Count} model(s) available on the server."
+                : $"Model list updated for this session, but saving config.json failed: {saveError}";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Could not load the model list: {Describe(ex)}";
+        }
     }
 
     /// <summary>切推理等级：写回当前档案，下一次请求生效。不重建会话、不丢历史。</summary>
@@ -788,16 +1278,31 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
         }
     }
 
-    /// <summary>重建 <see cref="Models"/>，并让 <see cref="SelectedModel"/> 指向当前档案（没有档案就是 null）。</summary>
+    /// <summary>
+    /// 用档案里的缓存重建 <see cref="Models"/>：缓存里的模型名 + 当前正在用的那个
+    /// （当前值不在列表里时补进去，免得下拉框一片空白）。<b>只读缓存，不联网</b>。
+    /// </summary>
     private void RefreshModels()
     {
+        var profile = _store.ActiveProfile;
+        var current = profile?.Model;
+
         Models.Clear();
-        foreach (var profile in _store.Current.Profiles)
+        foreach (var name in profile?.KnownModels ?? new List<string>())
         {
-            Models.Add(profile.Name);
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                Models.Add(name);
+            }
         }
 
-        SelectedModel = _store.Current.ActiveProfile?.Name;
+        if (!string.IsNullOrWhiteSpace(current) &&
+            !Models.Any(m => string.Equals(m, current, StringComparison.OrdinalIgnoreCase)))
+        {
+            Models.Add(current!);
+        }
+
+        SelectedModel = string.IsNullOrWhiteSpace(current) ? null : current;
     }
 
     /// <summary>下拉框选项 → 发给服务端的值：<see cref="DefaultReasoningLevel"/> = null（这个字段一个都不发）。</summary>
@@ -863,22 +1368,36 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
     // ==================== 内部：会话与线程 ====================
 
     /// <summary>按当前档案建会话。配置不全时抛 <see cref="ProviderConfigurationException"/>（调用方翻译成人话）。</summary>
-    private AgentSession EnsureSession()
+    /// <param name="workspace">
+    /// 系统提示词里那句"当前工作区"要写哪个路径；null = 现在没有工作区（提示词改成让模型先问用户）。
+    /// </param>
+    private AgentSession EnsureSession(string? workspace)
     {
         var provider = OpenAiProvider.FromActiveProfile(_store);
         var session = new AgentSession(
             provider,
             _tools,
             this,
-            new[] { ChatMessage.System(SystemPrompt) })
+            new[] { ChatMessage.System(BuildSystemPrompt(workspace)) })
         {
             // 权限档位跟着配置走：用户在工具条上切过"高级"，新会话要照样免问。
             ApprovalMode = _store.Current.ApprovalMode,
         };
 
         _session = session;
+        _sessionWorkspacePath = workspace;
         ProfileSummary = DescribeActiveProfile();
         UpdateAlwaysAllowedText();
+
+        // 切会话时如果 Provider 还没配好，历史先存在这儿 —— 现在补装回去（system 那句在上面已经生成）。
+        var pending = _pendingRestore;
+        _pendingRestore = null;
+        _pendingRestoreWorkspace = null;
+        if (pending is { Count: > 0 })
+        {
+            session.RestoreHistory(WithSystemPrompt(workspace, pending));
+        }
+
         return session;
     }
 

@@ -86,6 +86,12 @@ public sealed class AppConfig
         existing.MaxTokens = profile.MaxTokens;
         existing.ReasoningEffort = profile.ReasoningEffort;
 
+        // 模型名缓存同理：设置页不编辑它，别把用户拉到的列表擦掉。
+        if (profile.KnownModels is not null)
+        {
+            existing.KnownModels = profile.KnownModels;
+        }
+
         // 明文为 null = "这次不动密钥"，交给调用方明确地用空串表示"清掉"。
         if (profile.ApiKey is not null)
         {

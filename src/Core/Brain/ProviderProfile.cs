@@ -50,6 +50,14 @@ public sealed class ProviderProfile
     public string? ReasoningEffort { get; set; }
 
     /// <summary>
+    /// 上一次从服务端拉到的模型名列表（<c>GET /v1/models</c> 的缓存，给界面上的模型下拉框用）。
+    /// null 或空 = 还没拉过 —— 这时候下拉框只显示 <see cref="Model"/> 当前填的那一个。
+    /// </summary>
+    /// <remarks>缓存的意义是"不联网也能看到列表"：拉取要密钥 + 网络，启动时不该卡在这上面。</remarks>
+    [JsonPropertyName("knownModels")]
+    public List<string>? KnownModels { get; set; }
+
+    /// <summary>
     /// 密钥明文，<b>只存在于内存</b>，永远不写进配置文件。
     /// 读盘时由 <see cref="ConfigStore"/> 从 <see cref="ApiKeyProtected"/> 解出来。
     /// </summary>
@@ -104,6 +112,7 @@ public sealed class ProviderProfile
         Temperature = Temperature,
         MaxTokens = MaxTokens,
         ReasoningEffort = ReasoningEffort,
+        KnownModels = KnownModels is null ? null : new List<string>(KnownModels),
         ApiKey = ApiKey,
         ApiKeyProtected = ApiKeyProtected,
     };

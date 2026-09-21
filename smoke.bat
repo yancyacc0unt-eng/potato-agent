@@ -6,7 +6,9 @@ REM  Builds and runs every self test in the repo:
 REM    1. build Core.csproj + Win32.csproj + CoreSelfTest.csproj
 REM    2. run CoreSelfTest    (brain: SSE / tool loop / errors / config)
 REM    3. run Win32SelfTest   (real keyboard + mouse against its OWN notepad)
-REM    4. print a summary, then pause
+REM    4. run WorkspacesSelfTest (workspace store: paths, recent list, bad file)
+REM    5. run SessionsSelfTest   (SQLite session store, temp database only)
+REM    6. print a summary, then pause
 REM
 REM  Exit code: 0 = everything passed, 1 = something failed.
 REM  NOTE: comments and messages are ASCII English on purpose -
@@ -28,7 +30,7 @@ where dotnet >nul 2>&1
 if errorlevel 1 goto :nodotnet
 
 REM ---------- Step 1/4: build ----------
-echo [1/4] Building Core, Win32 and CoreSelfTest ...
+echo [1/6] Building Core, Win32 and CoreSelfTest ...
 echo.
 call :build build\CoreSelfTest.csproj CoreSelfTest
 if errorlevel 1 goto :failed
@@ -36,10 +38,14 @@ call :build build\Win32.csproj Win32
 if errorlevel 1 goto :failed
 call :build build\CoreSelfTest.csproj CoreSelfTest
 if errorlevel 1 goto :failed
+call :build build\WorkspacesSelfTest.csproj WorkspacesSelfTest
+if errorlevel 1 goto :failed
+call :build build\SessionsSelfTest.csproj SessionsSelfTest
+if errorlevel 1 goto :failed
 echo.
 
-REM ---------- Step 2/4: brain layer self test ----------
-echo [2/4] Running CoreSelfTest (brain layer, no real network) ...
+REM ---------- Step 2/6: brain layer self test ----------
+echo [2/6] Running CoreSelfTest (brain layer, no real network) ...
 echo.
 dotnet run --project build\CoreSelfTest.csproj -c Debug
 set "CORE_RC=%ERRORLEVEL%"
@@ -47,8 +53,8 @@ echo.
 if "%CORE_RC%"=="0" (echo       RESULT: CoreSelfTest  ....  PASS) else (echo       RESULT: CoreSelfTest  ....  FAIL  ^(exit code %CORE_RC%^))
 echo.
 
-REM ---------- Step 3/4: Win32 real machine self test ----------
-echo [3/4] Running Win32SelfTest (real keyboard and mouse) ...
+REM ---------- Step 3/6: Win32 real machine self test ----------
+echo [3/6] Running Win32SelfTest (real keyboard and mouse) ...
 echo.
 echo       NOTE: a few Notepad windows will flash on screen.
 echo             That is NORMAL. The test types into its OWN Notepad
@@ -60,16 +66,38 @@ echo.
 if "%WIN32_RC%"=="0" (echo       RESULT: Win32SelfTest  ...  PASS) else (echo       RESULT: Win32SelfTest  ...  FAIL  ^(exit code %WIN32_RC%^))
 echo.
 
-REM ---------- Step 4/4: summary ----------
-echo [4/4] Summary
+REM ---------- Step 4/6: workspace store self test ----------
+echo [4/6] Running WorkspacesSelfTest (workspace store, no GUI, no network) ...
 echo.
-echo       CoreSelfTest   (brain: SSE / tool loop / errors / config)
-echo       Win32SelfTest  (real Notepad: focus / type / click / gate)
+dotnet run --project build\WorkspacesSelfTest.csproj -c Debug
+set "WS_RC=%ERRORLEVEL%"
+echo.
+if "%WS_RC%"=="0" (echo       RESULT: WorkspacesSelfTest  ....  PASS) else (echo       RESULT: WorkspacesSelfTest  ....  FAIL  ^(exit code %WS_RC%^))
+echo.
+
+REM ---------- Step 5/6: session store self test ----------
+echo [5/6] Running SessionsSelfTest (SQLite session store, temp db) ...
+echo.
+dotnet run --project build\SessionsSelfTest.csproj -c Debug
+set "SESS_RC=%ERRORLEVEL%"
+echo.
+if "%SESS_RC%"=="0" (echo       RESULT: SessionsSelfTest  ...  PASS) else (echo       RESULT: SessionsSelfTest  ...  FAIL  ^(exit code %SESS_RC%^))
+echo.
+
+REM ---------- Step 6/6: summary ----------
+echo [6/6] Summary
+echo.
+echo       CoreSelfTest       (brain: SSE / tool loop / errors / config)
+echo       Win32SelfTest      (real Notepad: focus / type / click / gate)
+echo       WorkspacesSelfTest (workspace store: paths / recent / bad file)
+echo       SessionsSelfTest   (SQLite session store)
 echo.
 
 set "FAILED=0"
 if not "%CORE_RC%"=="0" set "FAILED=1"
 if not "%WIN32_RC%"=="0" set "FAILED=1"
+if not "%WS_RC%"=="0" set "FAILED=1"
+if not "%SESS_RC%"=="0" set "FAILED=1"
 if "%FAILED%"=="1" goto :failed
 
 echo  ############################################################
@@ -103,7 +131,9 @@ echo  ############################################################
 echo.
 if not "%CORE_RC%"=="" if not "%CORE_RC%"=="0" echo       - CoreSelfTest  FAILED ^(exit code %CORE_RC%^)
 if not "%WIN32_RC%"=="" if not "%WIN32_RC%"=="0" echo       - Win32SelfTest FAILED ^(exit code %WIN32_RC%^)
-if "%CORE_RC%%WIN32_RC%"=="00" echo       - A build step failed, see the messages above.
+if not "%WS_RC%"=="" if not "%WS_RC%"=="0" echo       - WorkspacesSelfTest FAILED ^(exit code %WS_RC%^)
+if not "%SESS_RC%"=="" if not "%SESS_RC%"=="0" echo       - SessionsSelfTest   FAILED ^(exit code %SESS_RC%^)
+if "%CORE_RC%%WIN32_RC%%WS_RC%%SESS_RC%"=="0000" echo       - A build step failed, see the messages above.
 echo.
 pause
 exit /b 1

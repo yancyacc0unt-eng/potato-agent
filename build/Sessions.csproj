@@ -1,0 +1,56 @@
+<Project>
+
+  <!--
+    会话系统：多会话的元数据 + 消息历史，落 %APPDATA%\PotatoAgent\data.db（SQLite，SPEC 4.4）。
+    规矩照抄 Core.csproj：csproj 住 build/、源码住 ../src/Sessions/、显式 Include、
+    单独开 obj\Sessions\ 和 bin\Sessions\（同一个目录下的多个项目会互相覆盖 project.assets.json → NETSDK1005）。
+
+    ⚠ BaseIntermediateOutputPath / BaseOutputPath 必须在 Sdk.props 之前求值，
+      所以这里用显式 Sdk.props / Sdk.targets 导入的写法，而不是 <Project Sdk="...">。
+  -->
+
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>obj\Sessions\</BaseIntermediateOutputPath>
+    <BaseOutputPath>bin\Sessions\</BaseOutputPath>
+  </PropertyGroup>
+
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <AssemblyName>PotatoAgent.Sessions</AssemblyName>
+    <RootNamespace>PotatoAgent.Sessions</RootNamespace>
+
+    <!-- 源码不在项目目录下，关掉默认 glob，全部显式包含，避免漏收 / 重复包含 -->
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <!-- EnableDefaultItems=false 时 SDK 不再自动推导 Link，显式打开让 LinkBase 生效 -->
+    <SynthesizeLinkMetadata>true</SynthesizeLinkMetadata>
+    <DefaultItemExcludes>$(DefaultItemExcludes);.vs\**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\src\Sessions\**\*.cs" Exclude="..\src\Sessions\obj\**;..\src\Sessions\bin\**" LinkBase="src\Sessions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      消息模型（ChatMessage / ToolCall / ChatContentPart）住在 Core，本工程直接复用，
+      不另起一套 DTO —— 会话历史要原样喂回服务端，两套模型迟早会漂移。
+    -->
+    <ProjectReference Include="Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      唯一的第三方包：微软官方 SQLite 托管驱动（自带 SQLitePCLRaw 的 e_sqlite3 原生库）。
+      版本 10.0.12 与 Core.csproj 里的 System.Security.Cryptography.ProtectedData 同属 .NET 10 servicing band。
+    -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
+  </ItemGroup>
+
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+
+</Project>

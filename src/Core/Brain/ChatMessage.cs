@@ -27,6 +27,24 @@ public sealed class ChatMessage
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Content { get; set; }
 
+    /// <summary>
+    /// 思考模式的思维链原文（只有 assistant 消息会有）。模型这一轮没思考就是 null。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>带 <c>tools</c> 的请求必须把它原样回传</b>：DeepSeek 思考模式要求"之前所有轮次的
+    /// <c>reasoning_content</c> 都完整带回"，漏一个字段服务端就 400（见官方 thinking_mode 文档）。
+    /// 不带 tools 时服务端会忽略这个字段，但带上也无害，所以历史里一律带着走。
+    /// </para>
+    /// <para>
+    /// <b>它是思考过程，不是回答正文</b>：界面要显示也放在单独的区域，绝不能拼进 <see cref="Content"/>。
+    /// null 或空串时序列化<b>不写这个字段</b>（写 null 有的服务端会当成"显式清空"直接报错）。
+    /// </para>
+    /// </remarks>
+    [JsonPropertyName("reasoning_content")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReasoningContent { get; set; }
+
     /// <summary>模型要求调用的工具（只有 assistant 消息会有）。</summary>
     [JsonPropertyName("tool_calls")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -55,9 +73,18 @@ public sealed class ChatMessage
     /// <summary>user 消息。</summary>
     public static ChatMessage User(string content) => new() { Role = "user", Content = content };
 
-    /// <summary>assistant 消息（可能同时带文本和工具调用）。</summary>
-    public static ChatMessage Assistant(string? content, List<ToolCall>? toolCalls = null) =>
-        new() { Role = "assistant", Content = content, ToolCalls = toolCalls };
+    /// <summary>
+    /// assistant 消息（可能同时带文本和工具调用）。
+    /// <paramref name="reasoningContent"/> 是思考模式的思维链；模型这轮没思考就传 null（空串也按"没有"处理）。
+    /// </summary>
+    public static ChatMessage Assistant(string? content, List<ToolCall>? toolCalls = null, string? reasoningContent = null) =>
+        new()
+        {
+            Role = "assistant",
+            Content = content,
+            ToolCalls = toolCalls,
+            ReasoningContent = string.IsNullOrEmpty(reasoningContent) ? null : reasoningContent,
+        };
 
     /// <summary>tool 消息：把工具结果回灌给模型。</summary>
     public static ChatMessage Tool(string toolCallId, string content, string? toolName = null) =>

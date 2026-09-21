@@ -593,9 +593,10 @@ public sealed class SettingsViewModel : ObservableObject
     /// 失败返回一句人话。<b>不抛异常</b>。
     /// </summary>
     /// <remarks>
-    /// 这里故意自己发 <see cref="HttpClient"/> 请求、不走 <see cref="OpenAiProvider.ListModelsAsync"/> ——
-    /// 那个方法是 Core 里的预留桩，调了会抛 <see cref="NotImplementedException"/>；
-    /// 而且这个端点不消耗 token，最适合做"连通性 + 鉴权"体检。
+    /// 这里故意自己发 <see cref="HttpClient"/> 请求、不走 <c>OpenAiProvider.ListModelsAsync</c> ——
+    /// 那一位读的是<b>已经存盘的档案</b>，而这里要探的是界面上<b>还没保存</b>的地址和密钥（"测试连接"的意义就在这）。
+    /// 这个端点不消耗 token，最适合做"连通性 + 鉴权"体检。
+    /// 探到的模型名会随保存一起写进档案的 <c>KnownModels</c>，聊天页那个模型下拉框直接就有内容了。
     /// </remarks>
     private async Task<string?> TryListModelsAsync(Uri modelsUri, string? apiKey, CancellationToken ct)
     {
@@ -722,6 +723,11 @@ public sealed class SettingsViewModel : ObservableObject
             // 推理强度不在设置页里编辑（它在聊天页顶上的工具条上切），保存时原样带回去，
             // 否则 AddOrUpdate 会把这个字段清成 null，用户刚切好的档位会莫名其妙丢回"服务端默认"。
             ReasoningEffort = _store.Current.Find(name)?.ReasoningEffort,
+
+            // "测试连接"探到的模型名顺手存下来（聊天页的模型下拉框靠它）；这次没探过就保持原样。
+            KnownModels = AvailableModels.Count > 0
+                ? AvailableModels.ToList()
+                : _store.Current.Find(name)?.KnownModels,
 
             ApiKey = apiKey,
         };
