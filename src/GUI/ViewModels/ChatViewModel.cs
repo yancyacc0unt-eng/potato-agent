@@ -17,6 +17,14 @@ namespace GUI.ViewModels;
 /// <item><c>Button.Command="{Binding SendCommand}"</c> / <c>CancelCommand</c> / <c>ClearCommand</c>。</item>
 /// <item><c>TextBlock.Text="{Binding StatusMessage}"</c> —— 一行状态；<c>{Binding IsBusy}</c> 可以驱动转圈。</item>
 /// </list>
+/// <para><b>顶上那三个开关怎么接</b>（都是 <c>ComboBox</c>，<c>SelectedItem</c> 双向绑定）：</para>
+/// <list type="bullet">
+/// <item>模型：<c>ItemsSource="{Binding Models}"</c> + <c>SelectedItem="{Binding SelectedModel, Mode=TwoWay}"</c>。</item>
+/// <item>推理等级：<c>ItemsSource="{Binding ReasoningLevels}"</c> + <c>SelectedItem="{Binding SelectedReasoning, Mode=TwoWay}"</c>。</item>
+/// <item>权限档位：<c>ItemsSource="{Binding ApprovalModeLevels}"</c> + <c>SelectedItem="{Binding SelectedApprovalMode, Mode=TwoWay}"</c>。</item>
+/// </list>
+/// <para>三个都是"选中即生效"，不需要额外按钮；各自会自己存盘并在 <see cref="StatusMessage"/> 里报告结果。
+/// 切模型会重建会话（<b>模型侧的历史会清空</b>），另外两个立即生效、不动历史。</para>
 /// <para><b>权限确认怎么接</b>：本类自己实现了 <see cref="IToolApprover"/>。界面只要在启动时挂一次
 /// <see cref="ApprovalHandler"/>（弹出自己的确认框并把用户的选择返回即可）。
 /// <b>没挂 handler 时一律拒绝</b>（fail-closed，不会出现"忘了接于是乱点用户电脑"）。</para>
@@ -40,6 +48,18 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
         "window open). " +
         "Answer in the user's language, keep answers short, and never claim you did something you did not actually do.";
 
+    /// <summary>推理等级下拉框里代表"不发这个字段"的那一项（用服务端默认）。</summary>
+    public const string DefaultReasoningLevel = "Default";
+
+    /// <summary>权限档位下拉框里"基础"那一项的显示名（<c>basic</c> 的人话写法）。</summary>
+    public const string BasicLevelName = "Basic";
+
+    /// <summary>权限档位下拉框里"高级"那一项的显示名（<c>advanced</c> 的人话写法）。</summary>
+    public const string AdvancedLevelName = "Advanced";
+
+    /// <summary>推理等级里认得的取值（显示名；发给服务端时转成小写）。</summary>
+    private static readonly string[] KnownReasoningLevels = { "Low", "Medium", "High", "Max" };
+
     private readonly ConfigStore _store;
     private readonly ToolRegistry _tools;
     private readonly SynchronizationContext? _ui;
@@ -58,6 +78,15 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
     private string? _pendingApprovalTool;
     private string _profileSummary = "(no provider configured yet)";
     private string _alwaysAllowedText = "(none)";
+    private string? _selectedModel;
+    private string _selectedReasoning = DefaultReasoningLevel;
+    private string _selectedApprovalMode = BasicLevelName;
+
+    /// <summary>
+    /// 为 true 表示三个下拉框正在"对齐配置文件"（构造 / 重建会话时），
+    /// 属性 setter 看到它就不要把这次赋值当成用户在切换。
+    /// </summary>
+    private bool _switchingSelection;
 
     /// <summary>建一个聊天页 ViewModel。<b>请在 UI 线程上构造</b>（它会记住当前线程用来回送属性通知）。</summary>
     /// <param name="store">配置仓库：每轮对话前用它拿当前档案建 Provider。</param>
@@ -75,6 +104,12 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
         CancelCommand = new RelayCommand(Cancel, () => IsBusy);
         ClearCommand = new RelayCommand(ClearConversation, () => !IsBusy);
         ResetApprovalsCommand = new RelayCommand(ResetApprovals, () => !IsBusy);
+
+        // 当前档案摘要 + 三个开关先跟配置文件对齐（App 启动时已经 Load 过了）。
+        // 摘要不在这里算的话，启动瞬间会显示 "(no provider configured yet)"，
+        // 而旁边的模型下拉框明明已经选中了某个档案 —— 自相矛盾。
+        ProfileSummary = DescribeActiveProfile();
+        SyncSelectionsFromConfig();
     }
 
     /// <summary>
@@ -168,6 +203,91 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
     /// <summary>底层会话对象（想直接调 Core 时用）。没建过会话时为 null。类型 <see cref="AgentSession?"/>，只读。</summary>
     public AgentSession? Session => _session;
 
+    // ==================== 三个开关：模型 / 推理等级 / 权限档位 ====================
+
+    /// <summary>
+    /// 可选的模型列表 —— 其实就是全部档案名（一套档案 = 一个 base URL + 一把密钥 + 一个模型名）。
+    /// 类型 <see cref="ObservableCollection{T}"/>（元素是 <see cref="string"/>），只读。
+    /// 绑 <c>ComboBox.ItemsSource</c>；设置页保存后会自己刷新。
+    /// </summary>
+    public ObservableCollection<string> Models { get; } = new();
+
+    /// <summary>
+    /// 当前模型（<see cref="Models"/> 里选中的那一个档案名）。类型 <see cref="string?"/>，双向绑定。
+    /// <b>改它会立刻存盘并重建会话</b>：换了模型，模型侧那串上下文接不上，所以历史会被清空
+    /// （界面上的文字记录保留）。正在跑一轮时切不动 —— 会被回滚并在 <see cref="StatusMessage"/> 里说明。
+    /// </summary>
+    public string? SelectedModel
+    {
+        get => _selectedModel;
+        set
+        {
+            var previous = _selectedModel;
+            if (!SetProperty(ref _selectedModel, value) || _switchingSelection || string.IsNullOrWhiteSpace(value))
+            {
+                return;
+            }
+
+            if (IsBusy)
+            {
+                RevertSelection(() => SelectedModel = previous);
+                StatusMessage = "Finish or cancel the current turn before switching the model.";
+                return;
+            }
+
+            SwitchModel(value!);
+        }
+    }
+
+    /// <summary>
+    /// 推理等级下拉框的选项。第一项 <see cref="DefaultReasoningLevel"/> = 一个字段都不发（服务端默认），
+    /// 其余是发给服务端的 <c>reasoning_effort</c> 取值。类型 <see cref="IReadOnlyList{T}"/>（<see cref="string"/>），只读。
+    /// </summary>
+    public IReadOnlyList<string> ReasoningLevels { get; } = [DefaultReasoningLevel, .. KnownReasoningLevels];
+
+    /// <summary>
+    /// 当前推理等级（<see cref="ReasoningLevels"/> 里选中的那一项）。类型 <see cref="string"/>，双向绑定。
+    /// <b>立即生效、不重建会话、不丢历史</b>：它只是写回当前档案，下一次请求就带上新值。
+    /// </summary>
+    public string SelectedReasoning
+    {
+        get => _selectedReasoning;
+        set
+        {
+            if (!SetProperty(ref _selectedReasoning, value) || _switchingSelection || string.IsNullOrWhiteSpace(value))
+            {
+                return;
+            }
+
+            ApplyReasoning(value);
+        }
+    }
+
+    /// <summary>
+    /// 权限档位下拉框的选项：<see cref="BasicLevelName"/>（Confirm / Dangerous 都先问）与
+    /// <see cref="AdvancedLevelName"/>（只有 Dangerous 才问，其余静默放行）。
+    /// 类型 <see cref="IReadOnlyList{T}"/>（<see cref="string"/>），只读。
+    /// </summary>
+    public IReadOnlyList<string> ApprovalModeLevels { get; } = new[] { BasicLevelName, AdvancedLevelName };
+
+    /// <summary>
+    /// 当前权限档位（<see cref="ApprovalModeLevels"/> 里选中的那一项）。类型 <see cref="string"/>，双向绑定。
+    /// <b>立即生效并存盘</b>：正在跑的对话不用中断，下一次工具调用就按新档位判定要不要弹确认框。
+    /// </summary>
+    public string SelectedApprovalMode
+    {
+        get => _selectedApprovalMode;
+        set
+        {
+            if (!SetProperty(ref _selectedApprovalMode, value) || _switchingSelection || string.IsNullOrWhiteSpace(value))
+            {
+                return;
+            }
+
+            ApplyApprovalMode(value);
+        }
+    }
+
     // ==================== 命令 ====================
 
     /// <summary>
@@ -215,6 +335,7 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
 
         AlwaysAllowedText = "(none)";
         ProfileSummary = DescribeActiveProfile();
+        SyncSelectionsFromConfig();
         StatusMessage = "Settings applied: the next message will use the new profile. Conversation history was reset.";
     }
 
@@ -375,9 +496,16 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
                 }
 
                 Add(entry);
-                StatusMessage = starting.NeedsApproval
-                    ? $"Calling {starting.Name} (risk {starting.Risk}) - waiting for your approval..."
-                    : $"Calling {starting.Name} (risk {starting.Risk})...";
+
+                // 不问确认框有两种原因：本来就没危险（Safe），或者当前档位/已授权放行了。
+                // 后者要写在状态里，免得用户在"几乎不警告"档位下以为确认框坏了。
+                var note = starting.NeedsApproval
+                    ? " - waiting for your approval"
+                    : starting.Risk == ToolRisk.Safe
+                        ? string.Empty
+                        : " - allowed without asking (current permission mode)";
+
+                StatusMessage = $"Calling {starting.Name} (risk {starting.Risk}){note}...";
                 break;
             }
 
@@ -577,6 +705,161 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
         return decision;
     }
 
+    // ==================== 三个开关的实现 ====================
+
+    /// <summary>切模型：换当前档案 → 存盘 → 重建会话（历史清空）→ 报告结果。</summary>
+    private void SwitchModel(string name)
+    {
+        if (!_store.SetActiveProfile(name))
+        {
+            StatusMessage = $"Profile '{name}' is not in the config any more.";
+            SyncSelectionsFromConfig();
+            return;
+        }
+
+        var saved = TrySaveConfig(out var saveError);
+
+        // RebuildSession 会丢掉旧 Provider 和旧上下文，也会自己把三个下拉框对齐一遍。
+        RebuildSession();
+
+        StatusMessage = saved
+            ? $"Model switched to '{name}'. Conversation history was reset."
+            : $"Model switched to '{name}' for this session, but saving config.json failed: {saveError}";
+    }
+
+    /// <summary>切推理等级：写回当前档案，下一次请求生效。不重建会话、不丢历史。</summary>
+    private void ApplyReasoning(string level)
+    {
+        var profile = _store.ActiveProfile;
+        if (profile is null)
+        {
+            StatusMessage = "No provider profile yet - add one in Settings first.";
+            return;
+        }
+
+        // Provider 持有的是同一个 profile 对象，所以改完下一轮请求就带上了新值。
+        profile.ReasoningEffort = ToCoreReasoning(level);
+
+        var saved = TrySaveConfig(out var saveError);
+        var what = profile.ReasoningEffort is null
+            ? "server default (no reasoning_effort field is sent)"
+            : profile.ReasoningEffort;
+
+        StatusMessage = saved
+            ? $"Reasoning effort: {what}. It takes effect on the next request."
+            : $"Reasoning effort: {what} (this session only) - saving config.json failed: {saveError}";
+    }
+
+    /// <summary>切权限档位：立刻改在会话上并存盘（跑着的对话不用中断）。</summary>
+    private void ApplyApprovalMode(string level)
+    {
+        var mode = ToolApprovalModeNames.Parse(level);
+        _store.Current.ApprovalMode = mode;
+
+        // 会话可能还没建（第一句话还没发出去），那就等建的时候由 EnsureSession 带上。
+        if (_session is not null)
+        {
+            _session.ApprovalMode = mode;
+        }
+
+        var saved = TrySaveConfig(out var saveError);
+        var what = mode == ToolApprovalMode.Advanced
+            ? "Advanced - only Dangerous tools ask first, Confirm tools run without a prompt"
+            : "Basic - every tool that touches this PC asks first";
+
+        StatusMessage = saved
+            ? $"Permissions: {what}."
+            : $"Permissions: {what} (this session only) - saving config.json failed: {saveError}";
+    }
+
+    /// <summary>把三个下拉框重新对齐配置文件（只改显示，不触发任何"切换"动作）。</summary>
+    private void SyncSelectionsFromConfig()
+    {
+        _switchingSelection = true;
+        try
+        {
+            RefreshModels();
+            SelectedReasoning = FromCoreReasoning(_store.ActiveProfile?.ReasoningEffort);
+            SelectedApprovalMode = ApprovalDisplayName(_store.Current.ApprovalMode);
+        }
+        finally
+        {
+            _switchingSelection = false;
+        }
+    }
+
+    /// <summary>重建 <see cref="Models"/>，并让 <see cref="SelectedModel"/> 指向当前档案（没有档案就是 null）。</summary>
+    private void RefreshModels()
+    {
+        Models.Clear();
+        foreach (var profile in _store.Current.Profiles)
+        {
+            Models.Add(profile.Name);
+        }
+
+        SelectedModel = _store.Current.ActiveProfile?.Name;
+    }
+
+    /// <summary>下拉框选项 → 发给服务端的值：<see cref="DefaultReasoningLevel"/> = null（这个字段一个都不发）。</summary>
+    private static string? ToCoreReasoning(string level) =>
+        string.Equals(level, DefaultReasoningLevel, StringComparison.OrdinalIgnoreCase)
+            ? null
+            : level.Trim().ToLowerInvariant();
+
+    /// <summary>配置里的值 → 下拉框选项；认不出来的原样显示（别悄悄改掉用户手写的配置）。</summary>
+    private static string FromCoreReasoning(string? effort)
+    {
+        if (string.IsNullOrWhiteSpace(effort))
+        {
+            return DefaultReasoningLevel;
+        }
+
+        var trimmed = effort.Trim();
+        foreach (var known in KnownReasoningLevels)
+        {
+            if (string.Equals(known, trimmed, StringComparison.OrdinalIgnoreCase))
+            {
+                return known;
+            }
+        }
+
+        return trimmed;
+    }
+
+    /// <summary>权限档位 → 下拉框里的显示名。</summary>
+    private static string ApprovalDisplayName(ToolApprovalMode mode) =>
+        mode == ToolApprovalMode.Advanced ? AdvancedLevelName : BasicLevelName;
+
+    /// <summary>存盘。失败只回报一句话，绝不往外抛 —— 换个开关不该把界面搞崩。</summary>
+    private bool TrySaveConfig(out string? error)
+    {
+        try
+        {
+            _store.Save();
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = Describe(ex);
+            return false;
+        }
+    }
+
+    /// <summary>把一次选择改动回滚成原值，并且不让 setter 把它当成"用户在切换"。</summary>
+    private void RevertSelection(Action revert)
+    {
+        _switchingSelection = true;
+        try
+        {
+            revert();
+        }
+        finally
+        {
+            _switchingSelection = false;
+        }
+    }
+
     // ==================== 内部：会话与线程 ====================
 
     /// <summary>按当前档案建会话。配置不全时抛 <see cref="ProviderConfigurationException"/>（调用方翻译成人话）。</summary>
@@ -587,7 +870,11 @@ public sealed class ChatViewModel : ObservableObject, IToolApprover
             provider,
             _tools,
             this,
-            new[] { ChatMessage.System(SystemPrompt) });
+            new[] { ChatMessage.System(SystemPrompt) })
+        {
+            // 权限档位跟着配置走：用户在工具条上切过"高级"，新会话要照样免问。
+            ApprovalMode = _store.Current.ApprovalMode,
+        };
 
         _session = session;
         ProfileSummary = DescribeActiveProfile();

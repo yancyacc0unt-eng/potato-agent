@@ -85,6 +85,32 @@ internal sealed class FakeDangerTool : ITool
 }
 
 /// <summary>
+/// <see cref="ToolRisk.Dangerous"/> 的假工具：验证"高级"档位下<b>该问的还是会问</b>
+/// —— 高级只是免掉 Confirm，不是把所有警告都关掉。
+/// </summary>
+internal sealed class FakeVeryDangerTool : ITool
+{
+    public string Name => "fake_very_danger";
+
+    public string Description => "Test tool: pretends to do something irreversible on the user's machine.";
+
+    public string ParametersJsonSchema => """
+        {"type":"object","properties":{"what":{"type":"string"}},"required":["what"]}
+        """;
+
+    public ToolRisk Risk => ToolRisk.Dangerous;
+
+    /// <summary>真的被执行了几次。</summary>
+    public int Executions { get; private set; }
+
+    public Task<ToolResult> InvokeAsync(JsonElement args, CancellationToken ct)
+    {
+        Executions++;
+        return Task.FromResult(ToolResult.Ok("irreversible thing was done"));
+    }
+}
+
+/// <summary>
 /// 带"资源身份"的假工具：<b>参数换个写法，身份不变</b> —— 用来验证 <see cref="IToolCallIdentity"/>
 /// 这道护栏（参数逐字节那道拦不住它）。
 /// </summary>

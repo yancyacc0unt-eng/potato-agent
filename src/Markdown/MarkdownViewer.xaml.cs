@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
+using System.Windows.Input;
 
 namespace PotatoAgent.Markdown;
 
@@ -37,6 +38,11 @@ namespace PotatoAgent.Markdown;
 /// <b>四、不用管异常。</b>畸形 Markdown（未闭合的围栏 / 粗体、几万字、奇怪字符）不会抛 ——
 /// 渲染器承诺永不抛，最差是退回纯文本。
 /// </para>
+/// <para>
+/// <b>五、滚轮会转发给外层。</b>鼠标停在本控件上滚轮时，事件不会停在里面的
+/// <see cref="RichTextBox"/> 上，而是被重新抛给外层滚动容器（见 <c>OnPreviewMouseWheel</c>）——
+/// 这样把本控件塞进 <c>ListBox</c> / <c>ScrollViewer</c> 时，聊天列表照常滚得动。
+/// </para>
 /// </remarks>
 public partial class MarkdownViewer : UserControl
 {
@@ -68,7 +74,78 @@ public partial class MarkdownViewer : UserControl
         // 挂上去之后对一次账：字号真的不一样就重画一次，让标题缩放用上真正的字号。
         Loaded += (_, _) => RebuildIfBaseFontChanged();
 
+        // 滚轮转发，见 OnPreviewMouseWheel 的说明。挂在预览（隧道）阶段，
+        // 这样里面的 RichTextBox 还没机会把事件标记成 Handled。
+        PreviewMouseWheel += OnPreviewMouseWheel;
+
         Rebuild();
+    }
+
+    /// <summary>
+    /// 把鼠标滚轮"借道"给外层滚动容器：在预览（隧道）阶段把事件接住，再往父级重新抛一个同样的
+    /// <c>MouseWheel</c>，让它照常冒泡到外层的 <c>ScrollViewer</c>（聊天列表）。
+    /// </summary>
+    /// <param name="sender">本控件。</param>
+    /// <param name="e">滚轮事件（隧道阶段，此时 <c>Handled</c> 还是 false）。</param>
+    /// <remarks>
+    /// <para>
+    /// <b>为什么需要它。</b>消息正文是一个 <see cref="RichTextBox"/>，它的模板里自带一个
+    /// <c>ScrollViewer</c>（<c>PART_ContentHost</c>）。WPF 的老规矩是"冒泡路径上第一个
+    /// <c>ScrollViewer</c> 会把滚轮吃掉，哪怕它已经滚不动了"；那样鼠标停在消息上时就滚不动外层列表。
+    /// 本控件在预览（隧道）阶段把滚轮接过来、往外层重新抛一个，这条路径就不再取决于内层怎么处理。
+    /// 实测记录（2026-09-21，无窗口树）：原来的事件其实也能冒到外层（偏移 0 → 48 px），
+    /// 所以这不是那次"滚不到底部"的根因（根因是 <c>CanContentScroll</c>，见 MainWindow.xaml）；
+    /// 转发是为了把行为钉死，真窗口里内层 <c>ScrollViewer</c> 的动作不受这里控制。
+    /// 回归测试：<c>MarkdownSelfTest</c> 第 15 节。
+    /// </para>
+    /// <para>
+    /// <b>不会死循环。</b>抛出去的是<b>冒泡</b>的 <c>MouseWheel</c>，从父级出发往上走；
+    /// 本控件不在那条路径上，所以不会再回到这个处理器（本处理器只听隧道阶段的
+    /// <c>PreviewMouseWheel</c>）。
+    /// </para>
+    /// <para>
+    /// <b>不吃掉横向滚动。</b><see cref="MouseWheelEventArgs.Delta"/> 原样转发、键盘修饰键不动，
+    /// 所以按住 Shift 的横向滚轮在外层该怎么样还怎么样；本控件自己也不会去动横向偏移。
+    /// </para>
+    /// <para>
+    /// <b>内层自己能滚就不抢。</b>万一将来把 <c>Host</c> 的滚动条改成 <c>Auto</c>（内容比控件高），
+    /// 这个判断会把事件留给 <see cref="RichTextBox"/> 自己滚，转发不越权。
+    /// </para>
+    /// </remarks>
+    private void OnPreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (e.Handled || e.Delta == 0 || HostCanScroll(e.Delta))
+        {
+            return;
+        }
+
+        // 先标记已处理，免得里面的 RichTextBox 再处理一遍；然后在父级重新抛一个一模一样的事件。
+        e.Handled = true;
+
+        var target = Parent as UIElement ?? this;
+        target.RaiseEvent(new MouseWheelEventArgs(e.MouseDevice, e.Timestamp, e.Delta)
+        {
+            RoutedEvent = UIElement.MouseWheelEvent,
+        });
+    }
+
+    /// <summary>里面的 <see cref="RichTextBox"/> 自己还能不能往 <paramref name="delta"/> 的方向滚。</summary>
+    /// <param name="delta">滚轮增量：正数 = 往上滚。</param>
+    /// <returns>能滚就返回 <c>true</c>（这时不该抢事件）。</returns>
+    /// <remarks>
+    /// <see cref="RichTextBox"/> 没有 <c>ScrollableHeight</c>（那是 <c>ScrollViewer</c> 的），
+    /// 它的滚动量要用 <c>ExtentHeight - ViewportHeight</c> 算（单位都是像素）。
+    /// 纵向滚动条是 <c>Disabled</c> 时两者相等 = 滚不动，于是滚轮交给外层。
+    /// </remarks>
+    private bool HostCanScroll(int delta)
+    {
+        var scrollable = Host.ExtentHeight - Host.ViewportHeight;
+        if (scrollable <= 0)
+        {
+            return false;
+        }
+
+        return delta > 0 ? Host.VerticalOffset > 0 : Host.VerticalOffset < scrollable;
     }
 
     /// <summary>

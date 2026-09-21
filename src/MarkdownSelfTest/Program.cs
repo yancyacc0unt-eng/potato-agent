@@ -13,12 +13,16 @@
 //   dotnet run --project build\MarkdownSelfTest.csproj -c Debug
 // 退出码：0 = 全过，1 = 有失败。
 
+using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
+using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 
 namespace PotatoAgent.Markdown.SelfTest;
 
@@ -40,7 +44,7 @@ internal static class Program
         }
 
         Console.WriteLine("==================== PotatoAgent.Markdown 离线自测 ====================");
-        Console.WriteLine("被测：MarkdownRenderer.ToFlowDocument / ToInlines + MarkdownViewer");
+        Console.WriteLine("被测：MarkdownRenderer.ToFlowDocument / ToInlines + MarkdownViewer + ChatAutoScroll");
         Console.WriteLine();
 
         try
@@ -59,6 +63,9 @@ internal static class Program
             Test12ToInlines();
             Test13LayoutAndNoHardcodedStyle();
             Test14InsideChatList();
+            Test15WheelScrollsChatList();
+            Test16AutoScrollChatList();
+            Test17TallMessageBottomReachable();
         }
         catch (Exception error)
         {
@@ -526,6 +533,229 @@ internal static class Program
     }
 
     // ==================================================================
+    //  15. 滚轮必须能滚外层列表
+    // ==================================================================
+
+    /// <summary>
+    /// 用户报的 bug 里那条"鼠标停在消息上滚不动"。这里按 MainWindow.xaml 的真实形状搭一份列表
+    /// （ListBox + DataTemplate 里 MarkdownViewer），对着消息正文里的 RichTextBox 抛一个 MouseWheel，
+    /// 量外层 ScrollViewer 的 VerticalOffset。
+    /// </summary>
+    /// <remarks>
+    /// 实测记录（2026-09-21）：改之前这条<b>也是通的</b>（外层偏移 0 → 48 px）——
+    /// RichTextBox 并没有把滚轮吃掉，所以这不是"滚不到底部"的根因（根因见第 17 节）。
+    /// 这条测试留着，是为了把"转发 + 不越权 + 不吃横向"这几条约定钉住。
+    /// </remarks>
+    private static void Test15WheelScrollsChatList()
+    {
+        Section("15. 滚轮转发：停在消息正文上也要能滚外层聊天列表");
+
+        var (list, viewer, lines) = BuildChatList(shortCount: 30, lastText: "last message\n", autoScroll: false);
+
+        viewer.ScrollToTop();
+        Pump();
+        var start = viewer.VerticalOffset;
+
+        var host = HostAt(list, 0);
+        Check(host is not null, "第一条消息里找得到那个 RichTextBox（鼠标就停在它上面）");
+
+        if (host is null)
+        {
+            return;
+        }
+
+        // 记录"真正冒泡到列表"的事件，检查转发出去的增量有没有被改过
+        var deltas = new List<int>();
+        list.AddHandler(UIElement.MouseWheelEvent, new MouseWheelEventHandler((_, e) => deltas.Add(e.Delta)), true);
+
+        var wheel = RaiseWheel(host, -120);
+        Pump();
+        Check(viewer.VerticalOffset > start, $"滚轮(-120)停在消息正文上：外层偏移 {start:0.#} → {viewer.VerticalOffset:0.#} px");
+        Check(wheel.Handled, "事件被 MarkdownViewer 接住转发（没被里面的 RichTextBox 吃掉）");
+        Check(deltas.Count == 1 && deltas[0] == -120, $"转发出去的增量原样不变（外层收到 [{string.Join(",", deltas)}]）");
+        Check(Math.Abs(viewer.HorizontalOffset) < 0.01, $"没连累横向滚动（HorizontalOffset = {viewer.HorizontalOffset:0.#}）");
+
+        // 更深的源头（RichTextBox 模板里那个 PART_ContentHost）抛出来也得一样
+        var start2 = viewer.VerticalOffset;
+        var inner = host.Template.FindName("PART_ContentHost", host) as UIElement;
+        RaiseWheel(inner ?? host, -120);
+        Pump();
+        Check(viewer.VerticalOffset > start2, $"从更深一层（内层 ScrollViewer）抛：{start2:0.#} → {viewer.VerticalOffset:0.#} px");
+
+        // 反证：已经在顶部再往上滚，不许越界
+        viewer.ScrollToTop();
+        Pump();
+        RaiseWheel(host, 120);
+        Pump();
+        Check(viewer.VerticalOffset is >= 0 and < 0.01, $"已经在顶部再往上滚：偏移仍是 {viewer.VerticalOffset:0.#}（不越界）");
+
+        // 反证：内层 RichTextBox 自己滚得动的时候，滚轮不许被抢走（将来把滚动条改成 Auto 的情形）
+        var standalone = new MarkdownViewer { FontSize = 12, Markdown = BigMarkdown(40) };
+        var innerHost = (RichTextBox)standalone.Content;
+        innerHost.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+
+        var frame = new Border { Width = 400, Height = 60, Child = standalone };
+        frame.Measure(new Size(400, 60));
+        frame.Arrange(new Rect(0, 0, 400, 60));
+        frame.UpdateLayout();
+
+        Check(
+            innerHost.ExtentHeight - innerHost.ViewportHeight > 0,
+            $"构造出「内层能滚」的场景（可滚 {innerHost.ExtentHeight - innerHost.ViewportHeight:0.#} px）");
+
+        var deep = innerHost.Template.FindName("PART_ContentHost", innerHost) as UIElement ?? innerHost;
+        RaiseWheel(deep, -120);
+        Pump();
+        Check(innerHost.VerticalOffset > 0, $"内层自己能滚时转发不越权：RichTextBox 自己滚到 {innerHost.VerticalOffset:0.#} px");
+    }
+
+    // ==================================================================
+    //  16. 自动跟到底
+    // ==================================================================
+
+    /// <summary>
+    /// ChatAutoScroll 附加行为：追加内容时贴着底就自动跟、用户翻历史时不抢、并且有节流。
+    /// 全程无窗口；节流间隔设成 0 让行为同步执行，免得等计时器。
+    /// </summary>
+    private static void Test16AutoScrollChatList()
+    {
+        Section("16. 自动跟到底（ChatAutoScroll 附加行为）");
+
+        Check(
+            ChatAutoScroll.DefaultThrottleInterval >= TimeSpan.FromMilliseconds(60)
+            && ChatAutoScroll.DefaultThrottleInterval <= TimeSpan.FromMilliseconds(100),
+            $"默认节流间隔 {ChatAutoScroll.DefaultThrottleInterval.TotalMilliseconds:0} ms（要求 60~100 ms）");
+
+        // ---------- 对照组：不挂行为，追加内容不会自己跟到底 ----------
+        var (control, controlViewer, controlLines) = BuildChatList(shortCount: 30, lastText: "short\n", autoScroll: false);
+        ScrollToNearBottom(controlViewer, 10);
+        var controlBefore = controlViewer.VerticalOffset;
+        AppendToLast(control, controlLines, "\n\n又追加了一大段文字，把这条消息撑得更高。\n");
+        var controlGap = controlViewer.ScrollableHeight - controlViewer.VerticalOffset;
+        Check(controlGap > 20, $"对照（没挂行为）：追加后距底 {controlGap:0.#} px（偏移 {controlBefore:0.#} → {controlViewer.VerticalOffset:0.#}），说明这活儿不是 WPF 白送的");
+
+        // ---------- 挂上行为：贴底附近追加 → 跟到底 ----------
+        var (list, viewer, lines) = BuildChatList(shortCount: 30, lastText: "short\n", autoScroll: true);
+        Check(viewer.ScrollableHeight > 0, $"列表本身是可滚的（ScrollableHeight = {viewer.ScrollableHeight:0.#} px）");
+
+        ScrollToNearBottom(viewer, 10);
+        AppendToLast(list, lines, "\n\n又追加了一大段文字，把这条消息撑得更高。\n");
+        var gap = viewer.ScrollableHeight - viewer.VerticalOffset;
+        Check(gap <= 1, $"贴底附近追加内容 → 自动跟到底（距底 {gap:0.#} px）");
+
+        // ---------- 反证：用户往上翻历史时，不许把他拉回去 ----------
+        ScrollToNearBottom(viewer, 10);
+        viewer.ScrollToTop();
+        Pump();
+        var readingOffset = viewer.VerticalOffset;
+        for (var i = 0; i < 3; i++)
+        {
+            AppendToLast(list, lines, $"\n\n第 {i + 1} 段新的内容，用户正在上面看历史。\n");
+        }
+
+        Check(
+            Math.Abs(viewer.VerticalOffset - readingOffset) < 1,
+            $"反证：用户在最上面看历史时追加 3 段 → 偏移没被拉走（{readingOffset:0.#} → {viewer.VerticalOffset:0.#}）");
+
+        // ---------- 反证：用户滚回底部之后，跟随要恢复 ----------
+        ScrollToNearBottom(viewer, 0);
+        AppendToLast(list, lines, "\n\n用户又回到底部了，这段应该跟得上。\n");
+        Check(
+            viewer.ScrollableHeight - viewer.VerticalOffset <= 1,
+            $"用户回到底部后跟随恢复（距底 {viewer.ScrollableHeight - viewer.VerticalOffset:0.#} px）");
+
+        // ---------- 节流：一次追加风暴里只真正滚一次 ----------
+        var (burstList, burstViewer, burstLines) = BuildChatList(
+            shortCount: 30, lastText: "short\n", autoScroll: true, throttle: TimeSpan.FromSeconds(10));
+        ScrollToNearBottom(burstViewer, 10);
+
+        // 每一块都单独起一行，保证"每次追加都真的长高"（否则文字没折行，内容根本没变化，
+        // 不滚才是对的 —— 这一点本身也说明本行为是"按内容高度"办事，不是瞎滚）。
+        var appliedBefore = ChatAutoScroll.GetAppliedScrollCount(burstList);
+        for (var i = 0; i < 20; i++)
+        {
+            AppendToLast(burstList, burstLines, $"流式第 {i} 块文字。\n\n");
+        }
+
+        var throttled = ChatAutoScroll.GetAppliedScrollCount(burstList) - appliedBefore;
+        Check(throttled is >= 1 and <= 2, $"节流（10 s 窗口）：一次追加 20 块，只真正滚了 {throttled} 次");
+
+        // 同一场风暴，把节流关掉 → 每次追加都滚（证明上面那个 1 是节流压出来的）
+        var (fastList, fastViewer, fastLines) = BuildChatList(
+            shortCount: 30, lastText: "short\n", autoScroll: true, throttle: TimeSpan.Zero);
+        ScrollToNearBottom(fastViewer, 10);
+
+        var fastBefore = ChatAutoScroll.GetAppliedScrollCount(fastList);
+        for (var i = 0; i < 20; i++)
+        {
+            AppendToLast(fastList, fastLines, $"流式第 {i} 块文字。\n\n");
+        }
+
+        var unthrottled = ChatAutoScroll.GetAppliedScrollCount(fastList) - fastBefore;
+        Check(unthrottled >= 15, $"关掉节流（0 ms）：同样 20 块滚了 {unthrottled} 次（每次都跟）");
+
+        // ---------- 可复用：挂在普通 ScrollViewer 上也一样 ----------
+        var content = new StackPanel();
+        var scroll = new ScrollViewer
+        {
+            Width = 400,
+            Height = 200,
+            Content = content,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        };
+
+        for (var i = 0; i < 20; i++)
+        {
+            content.Children.Add(new Border { Height = 40, Child = new TextBlock { Text = $"line {i}" } });
+        }
+
+        Layout(scroll);
+        ChatAutoScroll.SetThrottleInterval(scroll, TimeSpan.Zero);
+        ChatAutoScroll.SetIsEnabled(scroll, true);
+
+        ScrollToNearBottom(scroll, 10);
+        content.Children.Add(new Border { Height = 40 });
+        Layout(scroll);
+        Pump();
+        var scrollGap = scroll.ScrollableHeight - scroll.VerticalOffset;
+        Check(scrollGap <= 1, $"同一个行为挂在普通 ScrollViewer 上也能跟到底（距底 {scrollGap:0.#} px）");
+    }
+
+    // ==================================================================
+    //  17. 一条比视口高的消息，必须能滚到它的底
+    // ==================================================================
+
+    /// <summary>
+    /// 2026-09-21 那个"滚动不到底部"的真正根因：<c>ListBox</c> 默认按条滚动
+    /// （<c>ScrollViewer.CanContentScroll=True</c>），<c>ExtentHeight</c> 的单位是"条"，
+    /// 于是一条比视口高的消息，滚到底也只是把它<b>顶</b>到视口上沿 —— 下半截永远看不见。
+    /// MainWindow.xaml 里那行 <c>ScrollViewer.CanContentScroll="False"</c> 就是治它的，这条是它的回归测试。
+    /// </summary>
+    private static void Test17TallMessageBottomReachable()
+    {
+        Section("17. 长消息（Markdown 渲染出来比视口高）必须能滚到它的底");
+
+        var (itemList, itemViewer, _) = BuildChatList(
+            shortCount: 6, lastText: BigMarkdown(40), autoScroll: false, pixelScroll: false);
+        itemViewer.ScrollToEnd();
+        Pump();
+        var itemHidden = BottomHidden(itemList, itemViewer);
+        Check(
+            itemHidden > 500,
+            $"反证（按条滚动，ListBox 默认）：滚到底后最后一条的底边还在视口下方 {itemHidden:0.#} px —— 这就是用户看到的「滚动不到底部」");
+
+        var (list, viewer, _) = BuildChatList(
+            shortCount: 6, lastText: BigMarkdown(40), autoScroll: false, pixelScroll: true);
+        viewer.ScrollToEnd();
+        Pump();
+        var hidden = BottomHidden(list, viewer);
+        Check(hidden <= 1, $"像素滚动（MainWindow.xaml 现在的写法）：滚到底后底边离视口底 {hidden:0.#} px，整条看得见");
+
+        var last = list.ItemContainerGenerator.ContainerFromIndex(list.Items.Count - 1) as ListBoxItem;
+        Check(last is not null && last.ActualHeight > viewer.ViewportHeight, $"样本确实比视口高（最后一条 {last?.ActualHeight:0.#} px / 视口 {viewer.ViewportHeight:0.#} px）");
+    }
+
+    // ==================================================================
     //  小工具
     // ==================================================================
 
@@ -592,6 +822,202 @@ internal static class Program
             : $"有失败：{_checks} 项检查，{_failures} 项失败。");
         Console.WriteLine("==================================================================");
         return _failures == 0 ? 0 : 1;
+    }
+
+    // ---------- 聊天列表形状（照 MainWindow.xaml 搭一份，无窗口） ----------
+
+    /// <summary>自测用的一条消息：界面上真正会变的就是 <see cref="Text"/>（流式追加 = 改它）。</summary>
+    private sealed class Line : INotifyPropertyChanged
+    {
+        private string _text = string.Empty;
+
+        /// <summary>正文（绑给 MarkdownViewer.Markdown）。</summary>
+        public string Text
+        {
+            get => _text;
+            set
+            {
+                _text = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Text)));
+            }
+        }
+
+        /// <summary>自测里不需要流式快路径，恒为 false。</summary>
+        public bool IsStreaming => false;
+
+        /// <summary>属性变更通知。</summary>
+        public event PropertyChangedEventHandler? PropertyChanged;
+    }
+
+    /// <summary>
+    /// 照 MainWindow.xaml 的聊天区搭一份列表：<c>ListBox</c> + 模板里放 <c>MarkdownViewer</c>、
+    /// <c>HorizontalContentAlignment=Stretch</c>、像素滚动（<c>CanContentScroll=False</c>）。
+    /// 全程无窗口，排一次版就够；返回列表、它内置的 <c>ScrollViewer</c>、以及消息集合。
+    /// </summary>
+    /// <param name="shortCount">前面铺几条短消息（用来把列表撑到可滚）。</param>
+    /// <param name="lastText">最后一条（"最新"那条）的正文。</param>
+    /// <param name="autoScroll">要不要挂 <see cref="ChatAutoScroll"/>。</param>
+    /// <param name="throttle">节流间隔；不给 = <see cref="TimeSpan.Zero"/>（同步执行，自测好断言）。</param>
+    /// <param name="pixelScroll"><c>true</c> = 像素滚动（MainWindow.xaml 现在的写法）；<c>false</c> = ListBox 默认的按条滚动（用来做反证）。</param>
+    private static (ListBox List, ScrollViewer Viewer, ObservableCollection<Line> Lines) BuildChatList(
+        int shortCount, string lastText, bool autoScroll, TimeSpan? throttle = null, bool pixelScroll = true)
+    {
+        const string Xaml = """
+            <ListBox xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                     xmlns:md="clr-namespace:PotatoAgent.Markdown;assembly=PotatoAgent.Markdown"
+                     Width="600" Height="200"
+                     HorizontalContentAlignment="Stretch">
+              <ListBox.ItemTemplate>
+                <DataTemplate>
+                  <md:MarkdownViewer Markdown="{Binding Text}" IsStreaming="{Binding IsStreaming}" />
+                </DataTemplate>
+              </ListBox.ItemTemplate>
+            </ListBox>
+            """;
+
+        var list = (ListBox)System.Windows.Markup.XamlReader.Parse(Xaml);
+
+        // 像素滚动 = ScrollViewer.CanContentScroll 关掉（单位从"条"变"像素"），别记反了。
+        System.Windows.Controls.ScrollViewer.SetCanContentScroll(list, !pixelScroll);
+
+        var lines = new ObservableCollection<Line>();
+        for (var i = 0; i < shortCount; i++)
+        {
+            lines.Add(new Line { Text = $"消息 {i}：一行短文本。\n" });
+        }
+
+        lines.Add(new Line { Text = lastText });
+        list.ItemsSource = lines;
+
+        Layout(list);
+        Pump();
+
+        if (autoScroll)
+        {
+            // 附加行为靠可视化树找里面的 ScrollViewer，所以必须排完版再挂；
+            // 挂上之后再推一次泵，把"初始布局"那批滚动事件排空，后面的断言才好算。
+            ChatAutoScroll.SetThrottleInterval(list, throttle ?? TimeSpan.Zero);
+            ChatAutoScroll.SetIsEnabled(list, true);
+            Pump();
+        }
+
+        var viewer = ViewerOf(list) ?? throw new InvalidOperationException("列表里没有 ScrollViewer");
+        return (list, viewer, lines);
+    }
+
+    /// <summary>列表内置的那个 <c>ScrollViewer</c>（从第一条消息往上找）。</summary>
+    private static ScrollViewer? ViewerOf(ListBox list)
+        => list.ItemContainerGenerator.ContainerFromIndex(0) is ListBoxItem item ? FindAncestor<ScrollViewer>(item) : null;
+
+    /// <summary>第 <paramref name="index"/> 条消息里的 <c>RichTextBox</c>（鼠标停在正文上时命中元素就在它里面）。</summary>
+    private static RichTextBox? HostAt(ListBox list, int index)
+        => list.ItemContainerGenerator.ContainerFromIndex(index) is ListBoxItem item ? Find<RichTextBox>(item) : null;
+
+    /// <summary>最后一条消息的底边还藏在视口下方多少像素（0 = 整条都露出来了）。</summary>
+    private static double BottomHidden(ListBox list, ScrollViewer viewer)
+    {
+        var last = list.ItemContainerGenerator.ContainerFromIndex(list.Items.Count - 1) as ListBoxItem;
+        if (last is null)
+        {
+            return double.NaN;
+        }
+
+        var bottom = last.TransformToAncestor(viewer).Transform(new Point(0, last.ActualHeight)).Y;
+        return Math.Max(0, bottom - viewer.ViewportHeight);
+    }
+
+    /// <summary>把视图放到"距底 <paramref name="slack"/> 像素"处（0 = 正好贴底）。</summary>
+    private static void ScrollToNearBottom(ScrollViewer viewer, double slack)
+    {
+        viewer.ScrollToVerticalOffset(Math.Max(0, viewer.ScrollableHeight - slack));
+        Pump();
+    }
+
+    /// <summary>给最后一条消息追加文字（= 流式又吐了一块），然后重排 + 推泵。</summary>
+    private static void AppendToLast(ListBox list, ObservableCollection<Line> lines, string delta)
+    {
+        lines[^1].Text += delta;
+        Layout(list);
+        Pump();
+    }
+
+    /// <summary>无窗口排版一次。</summary>
+    private static void Layout(FrameworkElement element)
+    {
+        element.Measure(new Size(element.Width, element.Height));
+        element.Arrange(new Rect(0, 0, element.Width, element.Height));
+        element.UpdateLayout();
+    }
+
+    /// <summary>
+    /// 把排进队列的活儿跑完。WPF 的滚动、<c>ScrollChanged</c>、布局都是丢给 Dispatcher 的，
+    /// 无窗口自测里没人转消息泵，得自己推。推好几轮：一轮里往往又排进新的活儿。
+    /// </summary>
+    private static void Pump(int rounds = 4)
+    {
+        for (var i = 0; i < rounds; i++)
+        {
+            Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.Background);
+        }
+    }
+
+    /// <summary>对着某个元素抛一个滚轮事件（正数 = 往上滚），返回事件参数供检查。</summary>
+    private static MouseWheelEventArgs RaiseWheel(UIElement target, int delta)
+    {
+        var args = new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, delta)
+        {
+            RoutedEvent = UIElement.MouseWheelEvent,
+        };
+
+        target.RaiseEvent(args);
+        return args;
+    }
+
+    /// <summary>够长够高的 Markdown 正文（把一条消息撑得比视口还高）。</summary>
+    private static string BigMarkdown(int lines)
+    {
+        var builder = new StringBuilder("# 长回答\n\n");
+        for (var i = 0; i < lines; i++)
+        {
+            builder.Append($"第 {i} 行：一段**加粗**的正文，用来把这一条消息撑得比视口还高。\n\n");
+        }
+
+        return builder.ToString();
+    }
+
+    private static T? FindAncestor<T>(DependencyObject node)
+        where T : DependencyObject
+    {
+        for (var current = node; current is not null; current = VisualTreeHelper.GetParent(current))
+        {
+            if (current is T hit)
+            {
+                return hit;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>在可视化子树里找第一个 <typeparamref name="T"/>。</summary>
+    private static T? Find<T>(DependencyObject root)
+        where T : DependencyObject
+    {
+        if (root is T hit)
+        {
+            return hit;
+        }
+
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var found = Find<T>(VisualTreeHelper.GetChild(root, i));
+            if (found is not null)
+            {
+                return found;
+            }
+        }
+
+        return null;
     }
 
     // ---------- 文档遍历（自测自己走一遍树，不借被测代码的手） ----------

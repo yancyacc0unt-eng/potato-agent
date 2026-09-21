@@ -88,6 +88,13 @@ public sealed class AgentSession
     /// </summary>
     public IToolApprover? Approver { get; set; }
 
+    /// <summary>
+    /// 权限档位。可以在运行中改 —— 下一次工具调用就按新档位判定。
+    /// 默认 <see cref="ToolApprovalMode.Basic"/>：Confirm / Dangerous 都先问用户。
+    /// </summary>
+    /// <remarks>档位只决定"要不要弹确认框"；没挂 <see cref="Approver"/> 时该问的一律拒绝（fail-closed）。</remarks>
+    public ToolApprovalMode ApprovalMode { get; set; } = ToolApprovalMode.Basic;
+
     /// <summary>单轮最多跑几轮工具调用；到顶就停下并如实标记 <see cref="AgentTurnResult.StoppedAtRoundLimit"/>。</summary>
     public int MaxToolRounds { get; set; } = 8;
 
@@ -260,7 +267,7 @@ public sealed class AgentSession
                 var argumentsJson = call.Function.Arguments ?? string.Empty;
                 Tools.TryGet(name, out var tool);
                 var risk = tool?.Risk ?? ToolRisk.Safe;
-                var needsApproval = tool is not null && tool.Risk != ToolRisk.Safe && !_alwaysAllowed.Contains(name);
+                var needsApproval = NeedsApproval(tool, name);
 
                 if (ct.IsCancellationRequested && cancellation is null)
                 {
@@ -422,6 +429,24 @@ public sealed class AgentSession
 
     // ==================== 内部 ====================
 
+    /// <summary>
+    /// 这一次调用要不要过权限门。三种情况直接放行：安全的工具、用户点过"总是允许"的、以及当前档位下不必问的。
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ToolApprovalMode.Basic"/> 下 Confirm / Dangerous 都问；
+    /// <see cref="ToolApprovalMode.Advanced"/> 下只有 Dangerous 才问，Confirm 静默放行。
+    /// 未知工具（<paramref name="tool"/> 为 null）也走这里返回 false，交给 ToolRegistry 去报"未知工具"。
+    /// </remarks>
+    private bool NeedsApproval(ITool? tool, string name)
+    {
+        if (tool is null || tool.Risk == ToolRisk.Safe || _alwaysAllowed.Contains(name))
+        {
+            return false;
+        }
+
+        return ApprovalMode == ToolApprovalMode.Basic || tool.Risk == ToolRisk.Dangerous;
+    }
+
     /// <summary>权限门：决定这一次调用放不放行。任何"说不清"的情况都按拒绝处理。</summary>
     private async Task<(bool Allowed, string? DenyReason)> DecideAsync(
         ITool? tool,
@@ -431,7 +456,7 @@ public sealed class AgentSession
         CancellationToken ct)
     {
         // 不存在的工具交给 ToolRegistry 报"未知工具"，这里不拦（拦了反而让模型不知道名字写错了）。
-        if (tool is null || tool.Risk == ToolRisk.Safe || _alwaysAllowed.Contains(name))
+        if (tool is null || !NeedsApproval(tool, name))
         {
             return (true, null);
         }

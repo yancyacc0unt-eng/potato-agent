@@ -53,13 +53,54 @@
                 <Grid Margin="8">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
+                    <!--
+                        三个开关：模型 / 推理等级 / 权限档位。
+                        纯粹的 ComboBox：选中即生效，没有额外的按钮，也没有任何样式 ——
+                        视觉设计由 yancy 重画时随便改，绑定契约见 ChatViewModel 的类注释（三个都只是
+                        ItemsSource + SelectedItem 双向绑定）。
+                        想换成按钮、下拉、单选都行，ViewModel 那边一行都不用动。
+                    -->
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
+                        <TextBlock Text="Model" VerticalAlignment="Center" Margin="0,0,6,0" />
+                        <ComboBox Width="180"
+                                  ItemsSource="{Binding Models}"
+                                  SelectedItem="{Binding SelectedModel, Mode=TwoWay}"
+                                  Background="{StaticResource ControlBrush}"
+                                  Foreground="{StaticResource ForegroundBrush}"
+                                  BorderBrush="{StaticResource PanelBorderBrush}"
+                                  AutomationProperties.AutomationId="ModelSelector"
+                                  AutomationProperties.Name="Model" />
+
+                        <TextBlock Text="Reasoning" VerticalAlignment="Center" Margin="16,0,6,0" />
+                        <ComboBox Width="110"
+                                  ItemsSource="{Binding ReasoningLevels}"
+                                  SelectedItem="{Binding SelectedReasoning, Mode=TwoWay}"
+                                  Background="{StaticResource ControlBrush}"
+                                  Foreground="{StaticResource ForegroundBrush}"
+                                  BorderBrush="{StaticResource PanelBorderBrush}"
+                                  AutomationProperties.AutomationId="ReasoningSelector"
+                                  AutomationProperties.Name="Reasoning effort" />
+
+                        <TextBlock Text="Permissions" VerticalAlignment="Center" Margin="16,0,6,0" />
+                        <ComboBox Width="130"
+                                  ItemsSource="{Binding ApprovalModeLevels}"
+                                  SelectedItem="{Binding SelectedApprovalMode, Mode=TwoWay}"
+                                  Background="{StaticResource ControlBrush}"
+                                  Foreground="{StaticResource ForegroundBrush}"
+                                  BorderBrush="{StaticResource PanelBorderBrush}"
+                                  ToolTip="Basic: every tool that touches this PC asks first. Advanced: only Dangerous tools ask."
+                                  AutomationProperties.AutomationId="ApprovalModeSelector"
+                                  AutomationProperties.Name="Permission mode" />
+                    </StackPanel>
+
                     <!-- 当前生效的 provider（不含密钥） -->
-                    <TextBlock Grid.Row="0"
+                    <TextBlock Grid.Row="1"
                                Text="{Binding ProfileSummary}"
                                Margin="0,0,0,6"
                                AutomationProperties.AutomationId="ChatProfileText" />
@@ -77,10 +118,22 @@
                           会用"无限宽"去量子项，而里面折行的 RichTextBox 在无限宽度下会退化成
                           10px 宽的一条缝（实测同一条消息：600 宽 → 行高 91px；无限宽 → 行高 671px、文字竖着折）。
                           写 Stretch 之后行宽 = 视口宽，行高回到 119.8px。这条有回归自测兜着。
+
+                        ⚠ ScrollViewer.CanContentScroll="False" 不能删（实测，2026-09-21 滚动 bug 的根因）：
+                          ListBox 默认是"按条滚动"，ExtentHeight 的单位是"条"，于是【一条比视口高的消息
+                          永远滚不到它的底】—— 实测 600x200 的列表里放一条 1872px 高的 Markdown 回答，
+                          滚到底之后它的底边还在视口下方 1871px，用户原话"markdown 渲染出来的东西滚动不到底部"。
+                          关掉之后单位变像素：同一条消息滚到底时底边正好落在视口底（差 0px）。
+
+                        md:ChatAutoScroll.IsEnabled="True" = 有新内容就自动跟到底（用户往上翻历史时不抢），
+                          实现在 Markdown 层（src/Markdown/ChatAutoScroll.cs），不改这里的任何排版/配色。
+                          它按"像素"判断贴不贴底，所以和上面那行 CanContentScroll="False" 是一对，别拆。
                     -->
-                    <ListBox Grid.Row="1"
+                    <ListBox Grid.Row="2"
                              ItemsSource="{Binding Entries}"
                              HorizontalContentAlignment="Stretch"
+                             ScrollViewer.CanContentScroll="False"
+                             md:ChatAutoScroll.IsEnabled="True"
                              AutomationProperties.AutomationId="MessageList"
                              AutomationProperties.Name="Messages">
                         <ListBox.ItemTemplate>
@@ -93,7 +146,7 @@
                     </ListBox>
 
                     <!-- 输入行 -->
-                    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,8,0,0">
+                    <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,8,0,0">
                         <!-- 显式配色：不依赖主题，白底/深底都看得见（Fluent 主题下控件默认接近纯白） -->
                         <TextBox Width="620"
                                  Text="{Binding InputText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
@@ -128,7 +181,7 @@
                     </StackPanel>
 
                     <!-- 状态行 + 已授权工具 -->
-                    <StackPanel Grid.Row="3" Margin="0,8,0,0">
+                    <StackPanel Grid.Row="4" Margin="0,8,0,0">
                         <TextBlock Text="{Binding StatusMessage}"
                                    TextWrapping="Wrap"
                                    AutomationProperties.AutomationId="ChatStatusText" />

@@ -33,6 +33,7 @@ internal static class Program
         {
             ("chain", "【实测 1】离线全链路（假服务器 + 假工具）", ChainTests.OfflineToolLoopAsync),
             ("gate", "【实测 2】权限门（无 approver / 拒绝 / 允许 / 记住允许）", ChainTests.ApprovalGateAsync),
+            ("modes", "【实测 8】权限档位（Basic 全问 / Advanced 只问 Dangerous / 运行中切换）", ChainTests.ApprovalModesAsync),
             ("screen", "【实测 3】真实 pc_state + pc_screenshot", Win32ToolTests.RealStateAndScreenshotAsync),
             ("notepad", "【实测 4】只对自测自己开的记事本注入输入", Win32ToolTests.NotepadIsolationAsync),
             ("stream", "【实测 7】流式：增量是不是逐个、及时冒出来的", StreamingTests.IncrementalDeliveryAsync),

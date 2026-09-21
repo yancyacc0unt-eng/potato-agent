@@ -554,6 +554,13 @@ public sealed class OpenAiProvider : IDisposable
                 writer.WriteNumber("max_tokens", maxTokens);
             }
 
+            // 推理强度：只有用户明确设了才发 —— 各家服务端认的词和认不认这个字段都不一样，
+            // 默认不发（null）才不会把本来能跑的请求打成 400。
+            if (!string.IsNullOrWhiteSpace(Profile.ReasoningEffort))
+            {
+                writer.WriteString("reasoning_effort", Profile.ReasoningEffort);
+            }
+
             if (tools is { Count: > 0 })
             {
                 writer.WritePropertyName("tools");

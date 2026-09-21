@@ -185,6 +185,143 @@ internal static class ChainTests
         }
     }
 
+    /// <summary>
+    /// 实测 8：权限档位。Basic = Confirm / Dangerous 都问；Advanced = 只问 Dangerous。
+    /// 顺便证明 Advanced <b>不是把权限门关掉</b>：该执行的真执行、该问的照问、
+    /// 用户说"不"照样不执行、没有 approver 时仍然 fail-closed。
+    /// </summary>
+    public static async Task ApprovalModesAsync()
+    {
+        // (a) Basic（默认档位）：Confirm 照旧要问。
+        {
+            var danger = new FakeDangerTool();
+            var tools = new ToolRegistry();
+            tools.Register(danger);
+
+            using var server = OneToolCallServer("fake_danger");
+            using var provider = Provider.For(server);
+            var approver = new RecordingApprover(ToolApprovalDecision.AllowOnce);
+            var session = new AgentSession(provider, tools, approver);
+
+            Program.Check(session.ApprovalMode == ToolApprovalMode.Basic, "A：会话默认档位是 Basic");
+
+            var events = await Runner.RunAsync(session, "do it");
+
+            Program.Check(approver.Calls == 1, "A【Basic】：Confirm 工具问了用户 1 次");
+            Program.Check(danger.Executions == 1, "A：用户允许之后真的执行了");
+            Program.Check(
+                events.OfType<AgentToolStarting>().Single().NeedsApproval,
+                "A：AgentToolStarting.NeedsApproval = true（界面据此显示『等你确认』）");
+        }
+
+        // (b) Advanced：Confirm 不再打扰用户，但【照样真的执行】。
+        {
+            var danger = new FakeDangerTool();
+            var tools = new ToolRegistry();
+            tools.Register(danger);
+
+            using var server = OneToolCallServer("fake_danger");
+            using var provider = Provider.For(server);
+            var approver = new RecordingApprover(ToolApprovalDecision.AllowOnce);
+            var session = new AgentSession(provider, tools, approver)
+            {
+                ApprovalMode = ToolApprovalMode.Advanced,
+            };
+
+            var events = await Runner.RunAsync(session, "do it");
+
+            Program.Check(approver.Calls == 0, "B【Advanced】：Confirm 工具没有惊动用户（approver 被调用 0 次）");
+            Program.Check(danger.Executions == 1, "B：工具还是真的执行了（免掉的是确认框，不是执行）");
+            Program.Check(events.Count(e => e is AgentToolDenied) == 0, "B：没有任何拒绝事件");
+            Program.Check(
+                !events.OfType<AgentToolStarting>().Single().NeedsApproval,
+                "B：NeedsApproval = false（界面会写成『allowed without asking』）");
+        }
+
+        // (c) Advanced 下 Dangerous 仍然要问 —— "几乎不警告"不是"完全不警告"。
+        {
+            var very = new FakeVeryDangerTool();
+            var tools = new ToolRegistry();
+            tools.Register(very);
+
+            using var server = OneToolCallServer("fake_very_danger");
+            using var provider = Provider.For(server);
+            var approver = new RecordingApprover(ToolApprovalDecision.AllowOnce);
+            var session = new AgentSession(provider, tools, approver)
+            {
+                ApprovalMode = ToolApprovalMode.Advanced,
+            };
+
+            var events = await Runner.RunAsync(session, "wipe it");
+
+            Program.Check(approver.Calls == 1, "C：Advanced 下 Dangerous 工具照样问了 1 次");
+            Program.Check(approver.LastRisk == ToolRisk.Dangerous, "C：approver 拿到的风险等级是 Dangerous");
+            Program.Check(very.Executions == 1, "C：允许之后真的执行了");
+            Program.Check(
+                events.OfType<AgentToolStarting>().Single().NeedsApproval,
+                "C：NeedsApproval = true");
+        }
+
+        // (c2) 反证：Advanced 下说"不"依然作数；没有 approver 时照样拒绝。
+        {
+            var very = new FakeVeryDangerTool();
+            var tools = new ToolRegistry();
+            tools.Register(very);
+
+            using var server = OneToolCallServer("fake_very_danger");
+            using var provider = Provider.For(server);
+
+            var denying = new AgentSession(provider, tools, new RecordingApprover(ToolApprovalDecision.Deny))
+            {
+                ApprovalMode = ToolApprovalMode.Advanced,
+            };
+            var denied = await Runner.RunAsync(denying, "wipe it");
+
+            Program.Check(very.Executions == 0, "反证 C2：用户拒绝 → 一次都没执行");
+            Program.Check(denied.Count(e => e is AgentToolDenied) == 1, "C2：发出了 AgentToolDenied");
+
+            var noApprover = new AgentSession(provider, tools, approver: null)
+            {
+                ApprovalMode = ToolApprovalMode.Advanced,
+            };
+            await Runner.RunAsync(noApprover, "wipe it");
+
+            Program.Check(very.Executions == 0, "反证 C2：没有 approver 时 Dangerous 仍然被拒（高级档位绕不过 fail-closed）");
+        }
+
+        // (d) 运行中改档位：同一个会话，第一轮问、改成 Advanced 之后第二轮不问。
+        {
+            var danger = new FakeDangerTool();
+            var tools = new ToolRegistry();
+            tools.Register(danger);
+
+            using var server = OneToolCallServer("fake_danger");
+            using var provider = Provider.For(server);
+            var approver = new RecordingApprover(ToolApprovalDecision.AllowOnce);
+            var session = new AgentSession(provider, tools, approver);
+
+            await Runner.RunAsync(session, "first");
+            Program.Check(approver.Calls == 1, "D：第一轮（Basic）问了 1 次");
+
+            session.ApprovalMode = ToolApprovalMode.Advanced;
+            await Runner.RunAsync(session, "second");
+
+            Program.Check(approver.Calls == 1, "D：切到 Advanced 后第二轮不再问（总次数还是 1）");
+            Program.Check(danger.Executions == 2, "D：两轮都真的执行了（Executions=2）");
+        }
+    }
+
+    /// <summary>
+    /// 每一轮都先要求调一次指定工具的假服务端：奇数次请求 = 要调工具，偶数次 = 收尾。
+    /// 于是同一个假服务端能连着喂好几轮 <c>SendAsync</c>（运行中改档位那条用例需要）。
+    /// </summary>
+    private static MockServer OneToolCallServer(string toolName) => MockServer.Start((index, _) => index % 2 == 1
+        ? Sse.Script(
+            Sse.ToolCall(0, $"call_{index}", toolName, "{\"what\":\"delete everything\"}"),
+            Sse.Finish("tool_calls"),
+            Sse.Done)
+        : Sse.Script(Sse.Text("ok, done"), Sse.Finish("stop"), Sse.Done));
+
     private static MockServer OneDangerCallServer() => MockServer.Start((index, _) => index switch
     {
         1 => Sse.Script(

@@ -718,6 +718,11 @@ public sealed class SettingsViewModel : ObservableObject
             Model = (Model ?? string.Empty).Trim(),
             Temperature = temperature,
             MaxTokens = maxTokens,
+
+            // 推理强度不在设置页里编辑（它在聊天页顶上的工具条上切），保存时原样带回去，
+            // 否则 AddOrUpdate 会把这个字段清成 null，用户刚切好的档位会莫名其妙丢回"服务端默认"。
+            ReasoningEffort = _store.Current.Find(name)?.ReasoningEffort,
+
             ApiKey = apiKey,
         };
     }

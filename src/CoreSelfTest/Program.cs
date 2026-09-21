@@ -1,7 +1,7 @@
 // ============================================================================
 // 大脑（PotatoAgent.Core.Brain）层自测 —— 可复跑工程，退出码 0 = 全部通过。
 //
-// 覆盖四块：
+// 覆盖五块：
 //   一、SSE 解析    ：故意把响应切成 1 字节一片（含切开汉字、切开 data: 行）、\r\n 变体、
 //                     [DONE]、末尾没有换行的尾巴、空行分事件、注释心跳、多条 data
 //   二、工具调用循环：本地 HttpListener 假服务端返回 tool_calls（arguments 故意分两片），
@@ -10,6 +10,7 @@
 //                     —— 各自抛出明确的 ProviderException 子类，绝不裸崩
 //   四、配置与密钥  ：写 → 读回逐字符一致 → 磁盘上搜不到明文（原文/base64/前后片段）
 //                     → 文件损坏 / 缺失 / 密钥解不开时安全降级
+//   五、三个开关    ：切模型（换档案）/ 推理等级 / 权限档位（basic / advanced）的落盘与容错
 //
 // ⚠ 安全前提（本工程所有路径都遵守）：
 //   * HTTP 只打给【本进程自己起的 HttpListener】：127.0.0.1 + 系统分配的临时端口，不发任何真实外网请求；
@@ -54,6 +55,7 @@ internal static class Program
             ToolLoopTests.Run();
             ErrorTests.Run();
             ConfigTests.Run();
+            SwitchTests.Run();
         }
         catch (Exception error)
         {

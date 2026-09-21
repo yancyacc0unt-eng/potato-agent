@@ -39,6 +39,17 @@ public sealed class ProviderProfile
     public int? MaxTokens { get; set; } = 2048;
 
     /// <summary>
+    /// 推理强度，原样发给服务端的 <c>reasoning_effort</c> 字段（<c>low</c> / <c>medium</c> / <c>high</c> / <c>max</c> …）。
+    /// <b>null 或空 = 这个字段一个都不发</b>（默认：服务端不认它就 400，所以不敢默认发）。
+    /// </summary>
+    /// <remarks>
+    /// 刻意不做取值校验：各家服务端认的词不一样（有的只认 low/medium/high，有的另有 max / minimal），
+    /// 写错了由服务端报错、我们原样转达，比在本地瞎猜一个白名单更诚实。
+    /// </remarks>
+    [JsonPropertyName("reasoningEffort")]
+    public string? ReasoningEffort { get; set; }
+
+    /// <summary>
     /// 密钥明文，<b>只存在于内存</b>，永远不写进配置文件。
     /// 读盘时由 <see cref="ConfigStore"/> 从 <see cref="ApiKeyProtected"/> 解出来。
     /// </summary>
@@ -92,6 +103,7 @@ public sealed class ProviderProfile
         Model = Model,
         Temperature = Temperature,
         MaxTokens = MaxTokens,
+        ReasoningEffort = ReasoningEffort,
         ApiKey = ApiKey,
         ApiKeyProtected = ApiKeyProtected,
     };
@@ -100,7 +112,8 @@ public sealed class ProviderProfile
     public override string ToString()
     {
         var keyState = HasApiKey ? "key=" + Mask(ApiKey) : (HasUndecryptableKey ? "key=<undecryptable>" : "key=<none>");
-        return $"{Name}: {BaseUrl} / {Model} / temp={Temperature?.ToString() ?? "-"} / maxTokens={MaxTokens?.ToString() ?? "-"} / {keyState}";
+        return $"{Name}: {BaseUrl} / {Model} / temp={Temperature?.ToString() ?? "-"} / maxTokens={MaxTokens?.ToString() ?? "-"} / " +
+               $"reasoning={ReasoningEffort ?? "-"} / {keyState}";
     }
 
     /// <summary>只留头尾，中间打码。</summary>

@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using PotatoAgent.Core.Tools;
 
 namespace PotatoAgent.Core.Brain;
 
@@ -14,6 +15,24 @@ public sealed class AppConfig
     /// <summary>当前选中的 profile 名。</summary>
     [JsonPropertyName("activeProfile")]
     public string ActiveProfileName { get; set; } = "default";
+
+    /// <summary>
+    /// 工具权限档位在配置里的写法（<c>"basic"</c> / <c>"advanced"</c>，见 <see cref="ToolApprovalModeNames"/>）。
+    /// 刻意存字符串而不是枚举：这份文件是给人看的、也可能被人手改，拼错一个词只该退回默认档，
+    /// 不该因为一个 JsonException 把整份配置判成损坏。
+    /// </summary>
+    [JsonPropertyName("toolApprovalMode")]
+    public string ToolApprovalModeName { get; set; } = ToolApprovalModeNames.Basic;
+
+    /// <summary>
+    /// 工具权限档位（解析 <see cref="ToolApprovalModeName"/> 得来；认不出来一律当 <see cref="ToolApprovalMode.Basic"/>）。
+    /// </summary>
+    [JsonIgnore]
+    public ToolApprovalMode ApprovalMode
+    {
+        get => ToolApprovalModeNames.Parse(ToolApprovalModeName);
+        set => ToolApprovalModeName = ToolApprovalModeNames.ToName(value);
+    }
 
     /// <summary>全部档案。</summary>
     [JsonPropertyName("profiles")]
@@ -65,6 +84,7 @@ public sealed class AppConfig
         existing.Model = profile.Model;
         existing.Temperature = profile.Temperature;
         existing.MaxTokens = profile.MaxTokens;
+        existing.ReasoningEffort = profile.ReasoningEffort;
 
         // 明文为 null = "这次不动密钥"，交给调用方明确地用空串表示"清掉"。
         if (profile.ApiKey is not null)
@@ -111,6 +131,7 @@ public sealed class AppConfig
             "{",
             $"  \"version\": {Version},",
             $"  \"activeProfile\": \"{ActiveProfileName}\",",
+            $"  \"toolApprovalMode\": \"{ToolApprovalModeName}\",",
             "  \"profiles\": [",
         };
 
@@ -120,6 +141,7 @@ public sealed class AppConfig
             var comma = i == Profiles.Count - 1 ? string.Empty : ",";
             lines.Add($"    {{ \"name\": \"{p.Name}\", \"baseUrl\": \"{p.BaseUrl}\", \"model\": \"{p.Model}\", " +
                       $"\"temperature\": {p.Temperature?.ToString() ?? "null"}, \"maxTokens\": {p.MaxTokens?.ToString() ?? "null"}, " +
+                      $"\"reasoningEffort\": \"{p.ReasoningEffort ?? string.Empty}\", " +
                       $"\"apiKey\": \"{ProviderProfile.Mask(p.ApiKey)}\" }}{comma}");
         }
 
