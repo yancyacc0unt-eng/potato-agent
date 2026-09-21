@@ -1,0 +1,49 @@
+<Project>
+
+  <!--
+    文件工具（PotatoAgent.Files）的自测。规矩照抄 WorkspacesSelfTest.csproj：
+    csproj 住 build/、源码住 src/FilesSelfTest/、显式 Include、单独开 obj/bin 子目录。
+
+    它【不在】build.slnx 里，build.bat / smoke.bat 都不会碰它，只有想复跑自测时才手动：
+      dotnet build build\FilesSelfTest.csproj -c Debug
+      dotnet run -p build\FilesSelfTest.csproj -c Debug
+      （XML 注释里不能出现连续两个减号，所以这里写 -p 而不是长开关形式。）
+    退出码 0 = 全部通过，1 = 有失败（见 Program.cs）。
+
+    ⚠ 自测只在 %TEMP% 下自己建的一次性沙箱目录里折腾，绝不读也不写用户的任何真实文件。
+  -->
+
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>obj\FilesSelfTest\</BaseIntermediateOutputPath>
+    <BaseOutputPath>bin\FilesSelfTest\</BaseOutputPath>
+  </PropertyGroup>
+
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <AssemblyName>FilesSelfTest</AssemblyName>
+    <RootNamespace>PotatoAgent.Files.SelfTest</RootNamespace>
+
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <SynthesizeLinkMetadata>true</SynthesizeLinkMetadata>
+    <DefaultItemExcludes>$(DefaultItemExcludes);.vs\**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\src\FilesSelfTest\**\*.cs" Exclude="..\src\FilesSelfTest\obj\**;..\src\FilesSelfTest\bin\**" LinkBase="src\FilesSelfTest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 被测项目 + 它依赖的 Core（ToolRegistry / ToolRisk 直接来自 Core） -->
+    <ProjectReference Include="Files.csproj" />
+    <ProjectReference Include="Core.csproj" />
+  </ItemGroup>
+
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+
+</Project>

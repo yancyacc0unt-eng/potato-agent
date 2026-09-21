@@ -56,6 +56,12 @@
     <ProjectReference Include="Workspaces.csproj" />
     <!-- 会话（SQLite data.db）：多会话列表 + 历史恢复；它带 Microsoft.Data.Sqlite -->
     <ProjectReference Include="Sessions.csproj" />
+    <!-- 文件工具 file_*（读/写/拷/移 + 回收站删除）；相对路径按当前工作区解析 -->
+    <ProjectReference Include="Files.csproj" />
+    <!-- 受限控制台 pc_shell（Dangerous：每次弹确认、超时杀进程树、输出封顶） -->
+    <ProjectReference Include="Shell.csproj" />
+    <!-- 免密钥联网搜索 web_search（DuckDuckGo 主 + Bing 备） -->
+    <ProjectReference Include="Web.csproj" />
   </ItemGroup>
 
 </Project>

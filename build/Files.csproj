@@ -1,0 +1,49 @@
+<Project>
+
+  <!--
+    文件读写工具：六个 file_* 工具（list / read / write / copy / move / delete）。
+    规矩照抄 Win32.csproj：csproj 住 build/、源码住 ../src/Files/、显式 Include、
+    单独开 obj\Files\ 与 bin\Files\（同一目录下的多个项目会互相覆盖 project.assets.json，报 NETSDK1005）。
+
+    目标框架 net10.0-windows：file_delete 要 P/Invoke shell32 的 SHFileOperationW 走回收站。
+    不需要 UseWPF / UseWindowsForms，所以比 Win32.csproj 轻，仍然零 NuGet 依赖。
+    依赖方向只有一条：Files 指向 Core（实现 ITool 要用 Core.Tools 的 ITool / ToolResult / ToolRisk）。
+
+    ⚠ BaseIntermediateOutputPath / BaseOutputPath 必须在 Sdk.props 之前求值（否则 MSB3539），
+      所以这里用显式 Sdk.props / Sdk.targets 导入的写法，而不是 <Project Sdk="...">。
+  -->
+
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>obj\Files\</BaseIntermediateOutputPath>
+    <BaseOutputPath>bin\Files\</BaseOutputPath>
+  </PropertyGroup>
+
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <AssemblyName>PotatoAgent.Files</AssemblyName>
+    <RootNamespace>PotatoAgent.Files</RootNamespace>
+
+    <!-- 源码不在项目目录下，关掉默认 glob，全部显式包含，避免漏收 / 重复包含 -->
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <!-- EnableDefaultItems=false 时 SDK 不再自动推导 Link，显式打开让 LinkBase 生效 -->
+    <SynthesizeLinkMetadata>true</SynthesizeLinkMetadata>
+    <DefaultItemExcludes>$(DefaultItemExcludes);.vs\**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\src\Files\**\*.cs" Exclude="..\src\Files\obj\**;..\src\Files\bin\**" LinkBase="src\Files" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 工具要返回 Core 的 ITool 契约，这条引用是唯一允许的依赖方向（功能项目 指向 Core） -->
+    <ProjectReference Include="Core.csproj" />
+  </ItemGroup>
+
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+
+</Project>

@@ -1,0 +1,49 @@
+<Project>
+
+  <!--
+    联网工具：web_search（免密钥网页搜索，DuckDuckGo HTML 主 + Bing HTML 备）。
+    规矩照抄 Files.csproj：csproj 住 build/、源码住 ../src/Web/、显式 Include、
+    单独开 obj\Web\ 与 bin\Web\（同一目录下的多个项目会互相覆盖 project.assets.json，报 NETSDK1005）。
+
+    目标框架 net10.0（不是 -windows）：这里只有 HttpClient + 正则，没有任何 Win32 调用。
+    零 NuGet 依赖：只用 BCL 的 System.Net.Http，连压缩都是 HttpClientHandler 自带的。
+    依赖方向只有一条：Web 指向 Core（实现 ITool 要用 Core.Tools 的 ITool / ToolResult / ToolRisk）。
+
+    ⚠ BaseIntermediateOutputPath / BaseOutputPath 必须在 Sdk.props 之前求值（否则 MSB3539），
+      所以这里用显式 Sdk.props / Sdk.targets 导入的写法，而不是 <Project Sdk="...">。
+  -->
+
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>obj\Web\</BaseIntermediateOutputPath>
+    <BaseOutputPath>bin\Web\</BaseOutputPath>
+  </PropertyGroup>
+
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <AssemblyName>PotatoAgent.Web</AssemblyName>
+    <RootNamespace>PotatoAgent.Web</RootNamespace>
+
+    <!-- 源码不在项目目录下，关掉默认 glob，全部显式包含，避免漏收 / 重复包含 -->
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <!-- EnableDefaultItems=false 时 SDK 不再自动推导 Link，显式打开让 LinkBase 生效 -->
+    <SynthesizeLinkMetadata>true</SynthesizeLinkMetadata>
+    <DefaultItemExcludes>$(DefaultItemExcludes);.vs\**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\src\Web\**\*.cs" Exclude="..\src\Web\obj\**;..\src\Web\bin\**" LinkBase="src\Web" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 工具要返回 Core 的 ITool 契约，这条引用是唯一允许的依赖方向（功能项目 指向 Core） -->
+    <ProjectReference Include="Core.csproj" />
+  </ItemGroup>
+
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+
+</Project>

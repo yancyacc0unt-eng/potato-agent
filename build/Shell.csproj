@@ -1,0 +1,55 @@
+<Project>
+
+  <!--
+    受限的本地控制台工具 pc_shell：模型能跑一条 PowerShell 命令，但被硬护栏框住。
+    规矩照抄 Win32.csproj：csproj 住 build/、源码住 ../src/Shell/、显式 Include、
+    单独开 obj\Shell\ 和 bin\Shell\（同一个目录下的多个项目会互相覆盖 project.assets.json，会报 NETSDK1005）。
+
+    依赖方向只有一条：Shell 到 Core。本工程【只】引 Core.csproj，不引 Win32、不引任何 NuGet 包。
+
+    它的护栏不是"命令黑名单"（黑名单绕得过、还会拦掉正当操作），而是 ToolRisk.Dangerous：
+    每一次调用都必须由用户点确认，确认框里摊开的就是模型给的参数原文。
+
+    ⚠ BaseIntermediateOutputPath / BaseOutputPath 必须在 Sdk.props 之前求值（导入 SDK 之后再改是 MSB3539），
+      所以这里用显式 Sdk.props / Sdk.targets 导入的写法，而不是把 Sdk 写在 Project 标签上。
+    ⚠ XML 注释里不能出现连续两个减号（MSB4025），所以下面的跑法一律用 -p / -c 这种短开关。
+  -->
+
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>obj\Shell\</BaseIntermediateOutputPath>
+    <BaseOutputPath>bin\Shell\</BaseOutputPath>
+  </PropertyGroup>
+
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <AssemblyName>PotatoAgent.Shell</AssemblyName>
+    <RootNamespace>PotatoAgent.Shell</RootNamespace>
+
+    <!-- 源码不在项目目录下，关掉默认 glob，全部显式包含，避免漏收 / 重复包含 -->
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <!-- EnableDefaultItems=false 时 SDK 不再自动推导 Link，显式打开让 LinkBase 生效 -->
+    <SynthesizeLinkMetadata>true</SynthesizeLinkMetadata>
+    <DefaultItemExcludes>$(DefaultItemExcludes);.vs\**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 源码：排除 obj/bin 生成物，别把它们当源码收进来 -->
+    <Compile Include="..\src\Shell\**\*.cs" Exclude="..\src\Shell\obj\**;..\src\Shell\bin\**" LinkBase="src\Shell" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      src/Shell/Tools/ 里的 pc_shell 要实现 Core 的 ITool，所以需要这条引用。
+      功能项目到 Core 正是本项目唯一允许的那条引用方向。
+    -->
+    <ProjectReference Include="Core.csproj" />
+  </ItemGroup>
+
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+
+</Project>

@@ -1,0 +1,55 @@
+<Project>
+
+  <!--
+    联网工具（PotatoAgent.Web）的自测。规矩照抄 WorkspacesSelfTest.csproj：
+    csproj 住 build/、源码住 src/WebSelfTest/、显式 Include、单独开 obj/bin 子目录。
+
+    它【不在】build.slnx 里，build.bat 也不会碰它，只有想复跑自测时才手动：
+      dotnet run -p build\WebSelfTest.csproj -c Debug          <- 全离线，喂 fixture，绝不联网
+      dotnet run -p build\WebSelfTest.csproj -c Debug - live   <- 真联网（单独一个参数，不接进 smoke.bat）
+      （XML 注释里不能出现连续两个减号，所以上面用 -p 而不是长开关形式。）
+    退出码 0 = 全部通过，1 = 有失败（见 Program.cs）。
+
+    ⚠ 默认（不带参数）那一趟必须能断网跑：所有页面都来自 Fixtures\*.html
+      —— 那三份是从 DDG / Bing 真页面裁下来的真 markup，不是手写的假 HTML。
+    ⚠ fixtures 随 csproj 拷到输出目录（Fixtures\*.html），跑的时候不依赖当前工作目录；
+      万一没拷到，Program.cs 还会沿目录往上找 src\WebSelfTest\Fixtures 兜底。
+  -->
+
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>obj\WebSelfTest\</BaseIntermediateOutputPath>
+    <BaseOutputPath>bin\WebSelfTest\</BaseOutputPath>
+  </PropertyGroup>
+
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <AssemblyName>WebSelfTest</AssemblyName>
+    <RootNamespace>PotatoAgent.Web.SelfTest</RootNamespace>
+
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <SynthesizeLinkMetadata>true</SynthesizeLinkMetadata>
+    <DefaultItemExcludes>$(DefaultItemExcludes);.vs\**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\src\WebSelfTest\**\*.cs" Exclude="..\src\WebSelfTest\obj\**;..\src\WebSelfTest\bin\**" LinkBase="src\WebSelfTest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 真页面裁出来的 HTML fixture：拷到输出目录的 Fixtures\ 下 -->
+    <None Include="..\src\WebSelfTest\Fixtures\*.html" Link="Fixtures\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="Web.csproj" />
+  </ItemGroup>
+
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+
+</Project>

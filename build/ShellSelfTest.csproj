@@ -1,0 +1,48 @@
+<Project>
+
+  <!--
+    pc_shell 的自测。规矩照抄 WorkspacesSelfTest.csproj：
+    csproj 住 build/、源码住 src/ShellSelfTest/、显式 Include、单独开 obj/bin 子目录。
+
+    它【不在】build.slnx 里，build.bat 也不会碰它，只有想复跑自测时才手动：
+      dotnet build build\ShellSelfTest.csproj -c Debug
+      dotnet run -p build\ShellSelfTest.csproj -c Debug
+      （XML 注释里不能出现连续两个减号，所以这里用 -p / -c 这种短开关。）
+    退出码 0 = 全部通过，1 = 有失败（见 Program.cs）。
+
+    ⚠ 自测只写 %TEMP% 下的一次性沙箱目录，只起 powershell.exe / cmd.exe 做真实往返，不联网、不碰用户真实目录。
+    ⚠ 超时用例会让整体慢几秒，正常。
+  -->
+
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>obj\ShellSelfTest\</BaseIntermediateOutputPath>
+    <BaseOutputPath>bin\ShellSelfTest\</BaseOutputPath>
+  </PropertyGroup>
+
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <AssemblyName>ShellSelfTest</AssemblyName>
+    <RootNamespace>PotatoAgent.Shell.SelfTest</RootNamespace>
+
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <SynthesizeLinkMetadata>true</SynthesizeLinkMetadata>
+    <DefaultItemExcludes>$(DefaultItemExcludes);.vs\**</DefaultItemExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\src\ShellSelfTest\**\*.cs" Exclude="..\src\ShellSelfTest\obj\**;..\src\ShellSelfTest\bin\**" LinkBase="src\ShellSelfTest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="Shell.csproj" />
+  </ItemGroup>
+
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+
+</Project>

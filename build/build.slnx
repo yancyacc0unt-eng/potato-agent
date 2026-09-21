@@ -5,4 +5,7 @@
   <Project Path="Markdown.csproj" Id="b4e7d1a9-3f62-4c85-9d10-6a2f8e5b7c43" />
   <Project Path="Workspaces.csproj" Id="7694bae6-c6b8-4144-b7ee-270ceff36475" />
   <Project Path="Sessions.csproj" Id="0294ce8f-3418-4dc0-b911-90a1fd1960af" />
+  <Project Path="Files.csproj" Id="7f3c1d52-9a4b-4e88-b6d1-2c5e8f0a1b34" />
+  <Project Path="Shell.csproj" Id="8a4d2e63-ab5c-4f99-a7e2-3d6f9a1b2c45" />
+  <Project Path="Web.csproj" Id="9b5e3f74-bc6d-4a11-98f3-4e7a0b2c3d56" />
 </Solution>

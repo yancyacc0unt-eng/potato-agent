@@ -4,7 +4,10 @@ using System.Windows.Threading;
 using GUI.ViewModels;
 using PotatoAgent.Core.Brain;
 using PotatoAgent.Core.Tools;
+using PotatoAgent.Files;
 using PotatoAgent.Sessions;
+using PotatoAgent.Shell;
+using PotatoAgent.Web;
 using PotatoAgent.Win32.Tools;
 using PotatoAgent.Workspaces;
 
@@ -18,7 +21,9 @@ namespace GUI;
 /// 界面重画时这个文件基本不用动：ViewModel 和 Core 的接线全在 <see cref="OnStartup"/> 那一段里，
 /// 换界面 = 换 <c>MainWindow.xaml</c> 和下面 <c>new MainWindow(...)</c> 这一行。
 /// </para>
-/// <para>启动顺序：读配置 → 建工具表（<c>pc_*</c> 七个）→ 读工作区 → 开会话库（坏库先备份）→ 建两个 ViewModel → 开主窗口。</para>
+/// <para>启动顺序：读配置 → 读工作区 → 建工具表（<c>pc_*</c> / <c>file_*</c> / <c>pc_shell</c> / <c>web_search</c>）
+/// → 开会话库（坏库先备份）→ 建两个 ViewModel → 开主窗口。
+/// 工作区必须排在工具表前面：<c>file_*</c> 与 <c>pc_shell</c> 注册时要用它解析相对路径。</para>
 /// </remarks>
 public partial class App : Application
 {
@@ -43,15 +48,25 @@ public partial class App : Application
             var configStore = new ConfigStore();
             configStore.Load();
 
-            // 2) 工具：把 Win32 层的 pc_state / pc_windows / pc_screenshot（只读）
-            //    和 pc_click / pc_type / pc_keys / pc_launch / pc_close_window（要确认）一次性注册进来。
-            var tools = new ToolRegistry();
-            PcTools.RegisterAll(tools);
-
-            // 3) 工作区：当前工作区 + 最近打开列表（%APPDATA%\PotatoAgent\workspaces.json）。
+            // 2) 工作区：当前工作区 + 最近打开列表（%APPDATA%\PotatoAgent\workspaces.json）。
             //    Load() 永不抛：文件坏了就降级成"没有工作区"，界面照常起得来。
+            //    ⚠ 必须排在工具注册【之前】：file_* 和 pc_shell 要用它把相对路径解析成绝对路径
+            //    （没有工作区时相对路径直接报错，不猜、也不落到某个默认目录）。
             var workspaceStore = new WorkspaceStore();
             workspaceStore.Load();
+
+            // 3) 工具：四组一次性注册进来，模型看到的 tools 数组就是它们的并集。
+            //    * pc_*       —— 看屏幕 / 鼠标 / 键盘 / 窗口：pc_state / pc_windows / pc_screenshot（只读），
+            //                    pc_click / pc_type / pc_keys / pc_launch / pc_close_window（要确认）。
+            //    * file_*     —— 文件工具：file_list / file_read / web 之外都靠它；写操作要确认，
+            //                    file_delete 是 Dangerous 且只把东西挪进回收站。
+            //    * pc_shell   —— 一条 PowerShell 命令，Dangerous：每次都弹确认、超时杀进程树、输出封顶。
+            //    * web_search —— 免密钥联网搜索（DuckDuckGo 主、Bing 备），只读。
+            var tools = new ToolRegistry();
+            PcTools.RegisterAll(tools);
+            FileTools.RegisterAll(tools, () => workspaceStore.Current?.Path);
+            ShellTools.RegisterAll(tools, () => workspaceStore.Current?.Path);
+            WebTools.RegisterAll(tools);
 
             // 4) 会话库：%APPDATA%\PotatoAgent\data.db（SQLite）。坏库绝不静默重建 ——
             //    把文件改名留档 + 说明一句，再建一次；再不行就让外层弹框并 Shutdown(1)。
